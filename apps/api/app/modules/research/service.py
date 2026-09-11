@@ -513,10 +513,24 @@ async def export_csv(db: AsyncSession, author_id: uuid.UUID) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Access tier (§7.5.1, AD-19, Founder Decision #2)
+# Moderation status (used by moderation/service.py's take_action, API Spec
+# §5.3) — BUG FIX, this verification pass: moderation/service.py already called
+# `research_service.apply_moderation_status(...)`, but no such function existed
+# here, which would have raised AttributeError the first time a moderator
+# tried to restrict/remove/reinstate a research item. Added now, matching the
+# exact non-committing-helper contract community/service.py's
+# apply_moderation_status_to_post/_comment already establish (validated
+# new_status, fetch target, record previous state, set new state, db.flush()
+# only — caller controls the commit boundary so this participates correctly
+# in take_action's single atomic transaction, Architecture §10.1).
+#
+# SECOND BUG, caught during the follow-up verification pass: this function and
+# VALID_MODERATION_STATUSES were accidentally defined TWICE in this file (the
+# duplicate sat right above VALID_ACCESS_TIERS, near set_access_tier). Python
+# doesn't error on this — the second definition silently wins — but it's dead,
+# confusing duplication. Removed; this is now the single definition.
 # ---------------------------------------------------------------------------
 
-VALID_ACCESS_TIERS = ("core", "free_example")
 VALID_MODERATION_STATUSES = ("active", "restricted", "removed")
 
 
@@ -536,6 +550,13 @@ async def apply_moderation_status(db: AsyncSession, *, research_id: uuid.UUID, n
     research.moderation_status = new_status
     await db.flush()
     return previous_state
+
+
+# ---------------------------------------------------------------------------
+# Access tier (§7.5.1, AD-19, Founder Decision #2)
+# ---------------------------------------------------------------------------
+
+VALID_ACCESS_TIERS = ("core", "free_example")
 
 
 async def set_access_tier(db: AsyncSession, *, research_id: uuid.UUID, actor_id: uuid.UUID,

@@ -57,6 +57,7 @@ async def list_channel_posts(
     channel: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    include_moderated: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
     profile: Profile = Depends(get_current_profile),
     user: User = Depends(get_current_user),
@@ -65,13 +66,25 @@ async def list_channel_posts(
     Authenticated caller (regardless of email-verification status) may GET
     'announcements'; every other channel requires Authenticated + Verified
     (checked here, since Verified is conditional on the channel and can't be
-    expressed as a single unconditional Depends) AND MEMBER."""
+    expressed as a single unconditional Depends) AND MEMBER.
+
+    `include_moderated` (API Spec §10 end note / §12 item 3) is passed through
+    to service.list_channel_posts along with a server-computed `is_staff` —
+    the service layer only honors the flag when BOTH are true (see that
+    function's docstring), so this auth-tier gate above and the
+    include_moderated staff-only gate below are independent and neither
+    bypasses the other: a non-staff caller cannot use include_moderated to
+    skip the Verified/MEMBER check above, and passing this check doesn't
+    grant moderated-content visibility on its own."""
     if channel != "announcements":
         if user.email_verified_at is None:
             raise Forbidden("Please verify your email address to continue.")
         if not _is_member(profile):
             raise Forbidden("This channel requires Core membership.")
-    items, total = await service.list_channel_posts(db, channel=channel, page=page, page_size=page_size)
+    items, total = await service.list_channel_posts(
+        db, channel=channel, page=page, page_size=page_size,
+        include_moderated=include_moderated, is_staff=_is_staff(profile),
+    )
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
@@ -164,6 +177,7 @@ async def list_comments(
     post_id: uuid.UUID,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    include_moderated: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
     profile: Profile = Depends(get_current_profile),
     user: User = Depends(get_current_user),
@@ -171,15 +185,20 @@ async def list_comments(
     """§4.2.1 — 'Same visibility as the parent post' is enforced in two layers,
     matching what 'visibility' actually means for a post per §4.1.1/§4.1.6:
     (1) moderation-status visibility (visible/restricted/removed) — delegated to
-        service.list_comments, unchanged.
+        service.list_comments, including the staff-only `include_moderated`
+        override (server-computed `is_staff`, never trusted from the raw
+        query string alone — identical gating discipline as list_channel_posts
+        above and research's list_library/search_research).
     (2) channel/research-discussion AUTH-TIER visibility — the gate that decides
         whether the caller could even list this post in the first place. This was
-        MISSING before this fix: a caller who is Authenticated but not Verified/
+        MISSING before an earlier fix: a caller who is Authenticated but not Verified/
         MEMBER could previously read comments on a post in a Verified+MEMBER-gated
         channel (or a MEMBER-gated research discussion) directly via this endpoint,
         bypassing the same gate §4.1.1/§4.1.6 enforce on the post itself. Fixed by
         checking the SAME two conditions those endpoints check, applied to this
         comment's parent post, before calling into service.list_comments at all.
+        `include_moderated` cannot bypass this layer either — it is only consulted
+        after this auth-tier gate passes.
     """
     post = await service.get_post_or_404(db, post_id)
     if post.channel is not None and post.channel != "announcements":
@@ -201,6 +220,7 @@ async def list_comments(
 
     items, total = await service.list_comments(
         db, post_id=post_id, viewer_id=profile.user_id, is_staff=_is_staff(profile), page=page, page_size=page_size,
+        include_moderated=include_moderated,
     )
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 

@@ -20,6 +20,9 @@ from app.modules.research import models as _research_models  # noqa
 from app.modules.membership import models as _membership_models  # noqa
 from app.modules.billing import models as _billing_models  # noqa
 from app.modules.community import models as _community_models  # noqa
+from app.modules.moderation import models as _moderation_models  # noqa
+from app.modules.journal import models as _journal_models  # noqa
+from app.modules.portfolio import models as _portfolio_models  # noqa
 
 config = context.config
 if config.config_file_name is not None:

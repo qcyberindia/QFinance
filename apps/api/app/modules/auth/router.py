@@ -13,8 +13,8 @@ from app.modules.auth import service
 from app.modules.auth.models import User
 from app.modules.auth.schemas import (
     LoginRequest, LoginResponse, LoginResponseUser,
-    PasswordResetConfirmRequest, PasswordResetRequestRequest,
-    RegisterRequest, RegisterResponse, SessionResponse, VerifyEmailRequest,
+    PasswordResetConfirmRequest, PasswordResetConfirmResponse, PasswordResetRequestRequest, PasswordResetRequestResponse,
+    RegisterRequest, RegisterResponse, SessionResponse, VerifyEmailRequest, VerifyEmailResponse,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -27,11 +27,10 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     return RegisterResponse(user_id=str(user.id))
 
 
-@router.post("/verify-email")
+@router.post("/verify-email", response_model=VerifyEmailResponse)
 async def verify_email(body: VerifyEmailRequest, db: AsyncSession = Depends(get_db)):
-    # Not implemented this pass — see service.py TODOs.
-    from app.core.errors import QFinanceAPIError
-    raise QFinanceAPIError("TOKEN_INVALID_OR_EXPIRED", "This verification link is invalid or has expired.", 400)
+    await service.verify_email(db, token=body.token)
+    return VerifyEmailResponse(verified=True)
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -57,16 +56,16 @@ async def logout(response: Response, qf_session: str | None = Cookie(default=Non
     response.delete_cookie(settings.CSRF_COOKIE_NAME)
 
 
-@router.post("/password-reset/request")
+@router.post("/password-reset/request", response_model=PasswordResetRequestResponse)
 async def password_reset_request(body: PasswordResetRequestRequest, db: AsyncSession = Depends(get_db)):
     await service.request_password_reset(db, email=body.email)
-    return {"sent": True}  # Always 200 — never reveals whether the email exists (API Spec §1.5)
+    return PasswordResetRequestResponse(sent=True)  # Always 200 — never reveals whether the email exists (API Spec §1.5)
 
 
-@router.post("/password-reset/confirm")
+@router.post("/password-reset/confirm", response_model=PasswordResetConfirmResponse)
 async def password_reset_confirm(body: PasswordResetConfirmRequest, db: AsyncSession = Depends(get_db)):
     await service.confirm_password_reset(db, token=body.token, new_password=body.new_password)
-    return {"reset": True}
+    return PasswordResetConfirmResponse(reset=True)
 
 
 @router.get("/session", response_model=SessionResponse)

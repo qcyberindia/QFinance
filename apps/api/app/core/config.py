@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     AWS_S3_BUCKET: str | None = None
     AWS_REGION: str = "ap-south-1"  # OD-18 — infrastructure preference, not a legal claim
 
+    # Portfolio / Zerodha (Architecture V2 §3, PF.1–PF.4). Read-only Kite Connect
+    # integration — never used for order placement (BOUND-001, reaffirmed for V2 in
+    # the founder's explicit approval of read-only broker connectivity). If unset,
+    # the connect flow returns a clean BROKER_NOT_CONFIGURED error rather than
+    # crashing the application — mirrors the existing RAZORPAY_KEY_ID-unset pattern.
+    ZERODHA_API_KEY: str | None = None
+    ZERODHA_API_SECRET: str | None = None
+
     # Compliance document versions (CMPL-004/005, API Spec §4.5.1/§4.5.2, Database
     # Schema §8A `compliance_acknowledgments.document_version`). A config value, not
     # a hardcoded literal in service.py, so a future Charter/disclosure text update
@@ -49,6 +57,12 @@ class Settings(BaseSettings):
     # exactly which version a member actually acknowledged, per AD-16's reasoning.
     MEMBER_CHARTER_VERSION: str = "v1"
     RISK_DISCLOSURE_VERSION: str = "v1"
+
+    # Frontend base URL (Architecture §4.3's route-guard boundary) — used only to
+    # build verification/password-reset links (AUTH-002/005); the backend doesn't
+    # own frontend routing, but a link has to point somewhere real, and hardcoding
+    # a literal in auth/service.py would silently break in any non-local deployment.
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
 
 
 @lru_cache

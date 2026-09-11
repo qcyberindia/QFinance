@@ -51,6 +51,26 @@ async def test_verified_free_member_still_rejected_from_non_announcements_withou
 
 
 @pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")
+async def test_verified_free_member_cannot_create_post(client, verified_free_member):
+    """Regression test for the exact scenario reported against the real V2
+    frontend: a verified, Authenticated user with roles=['FREE_MEMBER'] (no
+    MEMBER grant, effective_tier='FREE') calling POST on a channel must get a
+    clean 403 — confirmed correct per API Spec V2 §3 ('all V1 §4/§5 RBAC rules
+    apply unchanged') and V1 §4.1.2 (create_channel_post requires MEMBER).
+    This was previously untested at the POST level — only the GET/list case
+    (the test immediately above) had regression coverage before this fix.
+    The frontend bug this pins the backend contract against was in
+    apps/web (unconditional Post-form rendering), not here — see
+    work_memory.md."""
+    resp = await client.post(
+        "/api/v1/community/channels/general_discussion/posts", json={"content": "hello"},
+        headers=verified_free_member.csrf_headers,
+    )
+    assert resp.status_code == 403
+    assert "core membership" in resp.json()["error"]["message"].lower()
+
+
+@pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")
 async def test_first_post_blocked_without_charter_acknowledgment(client, member_a_no_charter):
     resp = await client.post(
         "/api/v1/community/channels/general_discussion/posts", json={"content": "hello"},

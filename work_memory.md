@@ -303,6 +303,233 @@ Keep this file a concise operational memory and project history — not a copy o
 
 ---
 
+## Part K — Session 2026-09-01 — `moderation` verification + source-level Auth audit (email verification / password reset / EmailService / token store)
+
+### K.1 Tooling-boundary finding, established at the start of this session and repeatedly confirmed
+This session directly tested (not assumed) whether it had genuine execution access to the real project:
+- `bash_tool`'s sandbox has **no filesystem path to `/home/prd/Projects/QFinance`** (confirmed: `ls ~/Projects/QFinance` → "No such file or directory"; the sandbox's root directory listing contains no such path at all).
+- `bash_tool`'s sandbox has **no reachable PostgreSQL or Redis** (confirmed: `/dev/tcp/localhost/5432` and `/dev/tcp/localhost/6379` both `Connection refused`; no `psql`/`redis-cli` installed).
+- The `Filesystem` MCP connector (the only tool with real access to the actual repository) provides **read/write/search only — no execution/shell capability whatsoever**.
+- **Conclusion, stated plainly:** no tool available in this session can run `pytest`, `alembic`, `git`, or any other command against the real repository or a real database/Redis instance, regardless of what may or may not be genuinely available on that host. Every verification claim in this Part is scoped accordingly — either "verified by direct source read/diff," "verified by genuine execution in an isolated sandbox with no connection to the real project," or "written, not executed anywhere." No claim of the form "ran pytest against the real repo" or "confirmed Postgres/Redis available" appears anywhere below, because none is true.
+- **Corroborating evidence found on the real filesystem that a DIFFERENT tool/session, outside this one, HAS genuinely executed things there:** `apps/api/.venv/`, `apps/api/.pytest_cache/` (with `lastfailed: {}` — zero failures on that run — and a `nodeids` cache listing 79 tests across 9 files, none of them moderation-related), and `__pycache__/*.cpython-314.pyc` files for every module **except** `moderation` (which had none, before this session's edits) are all real, on-disk artifacts this session did not create. This is treated as evidence about *that other context*, not as something this session can build on or re-verify — it cannot re-run those tests or confirm they still pass after this session's edits.
+
+### K.2 `moderation` — found already implemented on disk; verified and 2 real bugs fixed
+**Provenance:** `apps/api/app/modules/moderation/{models,schemas,service,router}.py` were found already present and fully implemented at the start of this session — confirmed via direct `directory_tree` inspection before any other action, not assumed from this file's prior claim that moderation was "not created." Not attributed to this session's own drafting; this session's contribution is verification plus 2 concrete bug fixes below.
+
+**Bug fix 1 (real, confirmed by direct code read, not a guess):** `moderation/service.py`'s `_apply_target_state_change()` calls `research_service.apply_moderation_status(db, research_id=..., new_status=...)` for `restrict`/`remove`/`reinstate` actions on a `research`-type report — but `research/service.py` had no such function defined anywhere. This would have raised `AttributeError` the first time a moderator tried to act on a reported research item, i.e. `take_action` would crash for exactly one of its three supported target types. Fixed by adding `apply_moderation_status()` to `research/service.py`, matching the exact non-committing-helper contract (`db.flush()`, not `db.commit()`, returns previous state) that `community/service.py`'s `apply_moderation_status_to_post`/`_to_comment` already establish, so it participates correctly in `take_action`'s single-transaction commit boundary.
+
+**Bug fix 2 (real, confirmed by direct code read):** `alembic/env.py` imported every other module's `models` (including the just-added `community`) to populate `Base.metadata` for autogenerate, but never imported `moderation`'s — meaning `ModerationAction`/`ModerationRule`/`Report` would have been invisible to any future `alembic revision --autogenerate` even though their underlying tables already exist in `0001_initial_schema.py`. Fixed by adding the missing import line.
+
+**The documented `reinstate`/`resolution_action` CHECK-constraint contradiction** (API Spec §5.3 permits `action: "reinstate"`; `reports.resolution_action`'s CHECK constraint has no matching value) was found **already correctly handled** in the pre-existing code — `_RESOLUTION_ACTION_BY_ACTION` deliberately omits a `'reinstate'` entry, so `take_action` writes `resolution_action = None` for a reinstate (report still resolves: `status='resolved'`, `resolved_by`/`resolved_at` set) rather than crashing on the CHECK constraint or writing an inaccurate value. This was verified, not invented, and is NOT resolved by editing either locked document — flagged as an open founder decision in the code's own module docstring and restated here.
+
+**Tests written this session:** `apps/api/tests/test_moderation_pure_logic.py` — 11 unit tests importing and exercising the REAL production constants/dicts from `moderation/models.py` and `moderation/service.py` (`MODERATION_ACTIONS`, `REPORT_TARGET_TYPES`, `VALID_ACTIONS`, `_RESOLUTION_ACTION_BY_ACTION`, `_NORMAL_STATE_BY_TARGET_TYPE`, `EDIT_UNSUPPORTED_FOR_TARGET_TYPES`) — including a direct regression test asserting `'reinstate' not in _RESOLUTION_ACTION_BY_ACTION`, which is the precise, executable characterization of the contradiction-handling code. **EXECUTED AND PASSED in an isolated sandbox reconstruction** (byte-for-byte copies of the real files, confirmed identical before copying) — not against the real project. No integration test file exists yet for `moderation`'s DB-touching paths (`create_report`, `take_action`'s full transaction, `suspend_member`/`reinstate_member`) — a genuine, stated gap, not silently covered by the unit-test file pretending to be more than it is.
+
+**Sandbox import/routing verification (genuinely executed, isolated sandbox, not the real host):** the full dependency graph — every file content read fresh from the real repo immediately before copying, including the `moderation` module, the `include_moderated=true` staff-only override added to `community.list_channel_posts`/`list_comments` and `research.list_library`/`search_research` (API Spec §10's cross-cutting staff-visibility mechanism, implemented as `include_moderated and is_staff` computed server-side, never trusting the raw client query value alone) — was reconstructed and `python3 -c "import app.main"` succeeded; `app.openapi()` resolved all expected `/moderation/*` routes with correct methods.
+
+### K.3 Source-level Auth audit — email verification, password reset, EmailService, token store
+**Provenance:** `apps/api/app/modules/auth/token_store.py` and `apps/api/app/integrations/email_service.py` were found already present and implemented at the start of this segment of the session (confirmed via `directory_tree`/file reads before any edit) — not written by this session. `auth/service.py`/`auth/router.py`/`auth/schemas.py` already had AUTH-002/005/006 (verify-email, password-reset request/confirm) wired against these, also pre-existing. This session's contribution is the audit and the 5 fixes below, not the original implementation.
+
+**5 real issues found and fixed, each verified by direct code diff (see the actual files for the exact before/after) and, where runtime-testable without a real DB, genuinely exercised in an isolated sandbox:**
+
+1. **`register()`'s email-step exception handling was too narrow.** Only caught `EmailServiceError`, but `create_verification_token()` is a Redis call (`token_store.py`), not an EmailService call — a Redis connection error there was NOT an `EmailServiceError` and would have propagated uncaught, turning an already-committed, successful registration into a misleading `500` response (the account WOULD exist in the DB; the caller would be told registration failed). **Fixed:** broadened to `except Exception`, with an explicit comment explaining why this specific broad catch is intentional. Verified by direct diff; NOT runtime-tested (would require a fake `AsyncSession` — judged not worth the complexity given the fix is a one-line broadening of an already-narrow, already-logged catch clause; see K.4 for what WAS runtime-tested).
+2. **`request_password_reset()` had the identical gap**, same fix applied, same verification scope.
+3. **`confirm_password_reset()` called `destroy_all_sessions_for_user()` completely unwrapped**, after the password-hash commit. A Redis outage during this SCAN-based session-revocation step would have raised uncaught, turning an already-successful, already-committed password change into a misleading `500` (again: the password DID change; the client would be told it didn't, risking a confusing duplicate-submission retry). **Fixed:** wrapped in `try/except Exception`, logged as a warning — the primary operation's success (password changed) is no longer coupled to the secondary hardening step's (session revocation) success.
+4. **`email_service.py`'s `_send_via_resend()` imported `httpx` completely unguarded**, unlike the established lazy-import-with-`ImportError`-guard pattern `payment_service.py` already uses for the `razorpay` SDK. If `httpx` isn't installed — which it currently isn't in this project's base dependency list, see below — this would raise a raw `ModuleNotFoundError` the moment a real `RESEND_API_KEY` is configured and someone registers, instead of this module's own clean `EmailServiceError`. **Fixed:** wrapped `import httpx` in `try/except ImportError`. **This fix WAS genuinely runtime-tested**, not just diffed: in the isolated sandbox, `builtins.__import__` was monkeypatched to simulate `httpx` genuinely being absent (raising `ImportError('simulated: httpx not installed')` specifically for that import), and `send_verification_email()` was called for real with a fake `RESEND_API_KEY` set to force the `_send_via_resend` code path. **Result: a clean `EmailServiceError` was raised, not a raw `ImportError`** — confirmed the fix actually works, not just that it reads correctly.
+5. **Missing/dead response schemas** on `/auth/verify-email`, `/auth/password-reset/request`, `/auth/password-reset/confirm` — the same class of gap already found and fixed in `community` earlier this project (endpoints returning raw dicts with no declared `response_model`, so the OpenAPI contract was incomplete). **Fixed:** added `VerifyEmailResponse`, `PasswordResetRequestResponse`, `PasswordResetConfirmResponse` to `auth/schemas.py` and wired them as `response_model=` on the three routes. Verified via genuine `app.openapi()` generation in the isolated sandbox — all 7 `/auth/*` routes resolve correctly, including these three now carrying proper response schemas.
+
+**One real gap found and deliberately NOT fixed, per this task's explicit scope boundary ("do not touch ... Python packaging cleanup"):** `httpx` is listed only under this project's `[project.optional-dependencies].dev` group in `pyproject.toml`, not the base `[project.dependencies]` list — meaning a production install (base deps only) would be missing it entirely, and `email_service.py`'s Resend-sending code path would hit fix #4's `ImportError`-guard (now correctly converted to a clean `EmailServiceError` rather than crashing raw, but the underlying capability — actually sending email in production — would still not work until this is corrected). **Recorded here, not fixed, because packaging changes were explicitly out of scope for this task.** Flagged as the top item for whichever future session is authorized to touch `pyproject.toml`.
+
+**One design question surfaced, not treated as a bug:** verification/password-reset tokens are stored in Redis as their raw opaque value (the Redis *key itself* is `"qf:verify_email:" + token`), not a hash of the token. Given the short TTLs (24h/1h), the large entropy (`secrets.token_urlsafe(32)` ≈ 256 bits), and that Redis is an internal, access-controlled component under this architecture's threat model (not a public-facing store), this is judged acceptable for MVP rather than a vulnerability — but hashing the token before using it as the Redis key (mirroring how passwords are never stored in plaintext) would be a legitimate defense-in-depth improvement for a future pass, noted here rather than either silently ignored or forced through as an unrequested change.
+
+**Sandbox verification actually performed (isolated, not the real host):** `python3 -m py_compile` on every touched file — passed. `python3 -c "import app.main"` with the full dependency graph (including the fixed `auth` module) reconstructed — passed. `app.openapi()` — all 7 `/auth/*` routes resolve with the corrected response models. The `httpx` `ImportError`-guard fix (item 4 above) was genuinely exercised at runtime via monkeypatching, as described. The three broadened `except Exception` fixes (items 1–3) were verified by direct source diff/read only, NOT by runtime exception-injection against a mocked `AsyncSession` — stated precisely rather than implying equivalent runtime proof to item 4's test.
+
+**Tests written this session (`apps/api/tests/test_auth_flows.py`, 19 test functions):** registration (creates unverified user, rejects duplicate email/username, rejects short password, succeeds despite email-delivery failure — direct regression test for fixes 1–2), email verification (success, invalid token, expired token, replay), password reset (request always returns sent:true for both existing and non-existent email, request succeeds despite email-delivery failure, confirm rejects invalid/expired token, confirm rejects weak password WITHOUT consuming the token then succeeds on retry with the same token, confirm actually changes the password, confirm rejects token replay, confirm invalidates every existing session — direct regression test for the AD-03 requirement, confirm does not attempt to emit an unsupported `events` row), and suspended-account login rejection. **All 19 are `@pytest.mark.skip`'d with an explicit reason — WRITTEN ONLY, none executed anywhere, real host or sandbox** (the sandbox has no Postgres/Redis either, so even isolated execution isn't possible for these; only their syntactic validity/collectability was verified — `python3 -m py_compile` and `pytest --collect-only` both succeeded against the exact real file content).
+
+### K.4 Updated Part A/C.2 status
+`moderation`: ✅ implemented (provenance: found pre-existing), 2 real bugs found and fixed this session, unit-tested (11/11 passed in sandbox), import/routing verified in sandbox, no integration tests yet (genuine gap). `auth`: ✅ → remains ✅, now with email verification/password reset genuinely wired (was previously a stated TODO in this file's own D.2 history) and 5 real issues found/fixed during this session's audit; 19 tests written, none executed anywhere.
+
+**Not done in this pass:** `watchlist`, `notifications`, `admin`, frontend, `moderation` integration tests, the `httpx` packaging fix (explicitly out of scope), the token-hashing hardening (explicitly deferred as a judgment call, not a blocking defect).
+
+### K.5 Final report, as requested
+
+### K.6 Follow-up pass (same day) — final source-level review + 1 more real fix
+
+### L. V2 RESTRUCTURE (2026-09-11) — Portfolio/Journal/Community/Credits product pivot
+
+**Direction change:** Founder redirected the product from "research-community-only" to "investor workspace + investment community" (Portfolio → Journal → My Research → Community → Engagement → Reach → Credits → Premium). This is a genuine, deliberate product pivot, not a correction of prior work — everything built through §K remains valid and is being **adapted**, not discarded, per explicit founder instruction ("We are NOT rebuilding QFinance").
+
+**V1 documents are NOT deleted or edited** — they remain the historical record of the original MVP. Five new V2 documents were created:
+- `docs/PRD/QFINANCE_MVP_PRD_V2.md`
+- `docs/architecture/QFINANCE_ARCHITECTURE_V2.md`
+- `docs/database/QFINANCE_DATABASE_SCHEMA_V2.md`
+- `docs/api/QFINANCE_API_SPECIFICATION_V2.md`
+- `docs/uiux/QFINANCE_UI_UX_SPECIFICATION_V2.md`
+
+Each is additive/delta-style against its V1 counterpart (not a full rewrite-from-scratch prose document, per the explicit "keep this fast" instruction) and each states plainly which V1 concepts are KEPT, ADAPTED, or RETIRED. Notably: **V1's public Research Library (browse-all-published-research) is retired** in favor of "publish research → becomes a Community post" — flagged explicitly in PRD V2 §4.3 and Architecture V2 §5 as a deliberate scope retirement, not an oversight. The old `GET /research/library`/`GET /research/search` endpoints have **not yet been touched in code** — they still exist and work exactly as before; their disposition (deprecate vs. repurpose) is an open decision, explicitly deferred rather than silently made.
+
+**Inventory performed (Step 1, from actual files, not assumptions):**
+
+| Existing module | New role | Action |
+|---|---|---|
+| auth, users, audit, analytics | unchanged | KEEP |
+| companies | also referenced by journal | KEEP |
+| research | My Research (private workspace) + new publish-to-community bridge (bridge NOT YET BUILT) | ADAPT (partially done: none of the adaptation code exists yet, only the plan) |
+| community | Community, needs `post_type` column + `parent_comment_id` threading | ADAPT (NEITHER SCHEMA CHANGE NOR CODE CHANGE MADE YET — see Remaining Gaps) |
+| membership, billing, moderation | unchanged, billing stays gated | KEEP |
+| bookmarks (inside community) | Saved | KEEP as-is, no code touched |
+| **journal** | Investment Journal | **NEW — BUILT THIS PASS (see below)** |
+| **portfolio/broker** | Zerodha integration | NEW — NOT BUILT (see Remaining Gaps) |
+| **ratings** | Thesis rating | NEW — NOT BUILT |
+| **contributions/credit_ledger** | Credits (P1) | NEW — NOT BUILT, correctly deferred to Phase 5 per instructions |
+
+### L.1 What was actually built this pass: the `journal` module (P0, full vertical slice)
+
+**Files created (real, on disk, in the actual project):**
+- `apps/api/app/modules/journal/models.py` — `JournalEntry` model exactly matching Database Schema V2 §1 (`entry_type` CHECK, `content` length CHECK, soft-delete via `deleted_at`, optional `company_id` FK).
+- `apps/api/app/modules/journal/schemas.py`
+- `apps/api/app/modules/journal/service.py` — create/get/list/patch/delete, owner-only access with the same "404 not 403 for a non-owner" pattern research already established (API Spec V2 J.3, matching V1 §7.1.2 precedent).
+- `apps/api/app/modules/journal/router.py` — all 5 endpoints (J.1-J.5), CSRF on mutations, `get_current_user` (bare authenticated, no MEMBER/verified-email gate — journaling is a FREE-tier-available private feature per PRD V2 §4.2, which does not gate it behind Core membership; this is a deliberate reading of the PRD, not an oversight, but has NOT been explicitly confirmed by the founder — flagged as an assumption).
+- `apps/api/tests/test_journal_pure_logic.py` — 6 tests on `_validate_content`/`_validate_entry_type`.
+- `apps/api/alembic/versions/0003_journal_entries.py` — new `journal_entries` table, additive-only, matches Database Schema V2 §1 exactly.
+
+**Files modified (real):**
+- `apps/api/alembic/env.py` — added `journal.models` import for autogenerate metadata.
+- `apps/api/app/api/v1/router.py` — wired `journal_router`.
+
+**Verification actually performed (sandbox only, not the real host):**
+- Full `app.main` import with journal wired into the complete existing graph — **PASSED**, 48 total OpenAPI paths (up from 46), all 5 `/journal*` routes present with correct methods.
+- `test_journal_pure_logic.py`: **6/6 passed** in the isolated sandbox (exact copy of the real file's content, real pytest execution, zero DB/Redis involved since these are pure validation-function tests).
+- **NOT executed against the real host in this pass** — no execution access, as throughout this entire session.
+
+### L.2 Remaining gaps after this pass (explicit, not glossed over)
+
+Given the enormous scope of the full request (Community threading/post_type, My Research→Community bridge, Saved, Profile aggregation, Zerodha/Portfolio, Ratings, Credits/Contribution ledger, full API restructure, frontend for 10 screens) against a single pass with no code-execution access, **only the Journal module was completed to the established verification standard.** Everything else in the founder's Phase 2-6 list is specified in the V2 documents but **NOT YET IMPLEMENTED IN CODE**:
+
+- Community `post_type` column + migration — NOT DONE
+- Community `parent_comment_id` threading + `/replies` endpoint — NOT DONE
+- Research `publish-to-community` bridge endpoint — NOT DONE
+- Research Library retirement (old endpoints still live, untouched) — DECISION DEFERRED
+- Ratings module — NOT DONE
+- Profile aggregation (`GET /profile/{username}`) — NOT DONE
+- Portfolio/Zerodha broker abstraction — NOT DONE (needs `ZERODHA_API_KEY`/`ZERODHA_API_SECRET` config additions too)
+- Contribution/Credits ledger (Phase 5/P1, correctly not started before P0 per instructions) — NOT DONE
+- Frontend (all 10 screens) — NOT DONE
+- No `git diff`/commit capability was ever available this session — all "files modified" claims above are from direct re-reads via the Filesystem tool, not from git
+
+**This is reported honestly rather than papered over: completing the full restructure requires several more passes of the same read→implement→verify→record discipline used for Journal, one domain at a time, exactly as the founder's own "Implementation Discipline" section specifies.**
+
+A second review pass over `auth`, requested explicitly as a close-out step (not new feature work), found and fixed **one additional small, genuine issue** K.3 did not catch:
+
+- **Dead import:** `auth/service.py` imported `timedelta` from `datetime` but never used it anywhere in the file (verified by AST-level analysis, not just visual scan: parsed the file's import list against every bare `Name` node in the module — `timedelta` was the only import with zero references). **Fixed** by removing it from the import line. No behavior change. Verified via `py_compile` + AST re-check (0 dead imports remaining) and a full sandbox `app.main` import + `app.openapi()` regeneration (46 total paths now, up from 38 — the +8 are `/moderation/*`, confirming this pass's sandbox reconstruction included the moderation module found in K.2) — both **EXECUTED AND PASSED**. The full accumulated DB-free unit-test suite was also re-run: **28/28 passed** in the isolated sandbox.
+
+**Everything else reviewed against the specific checklist requested (registration behavior, email-verification token lifecycle, password-reset token lifecycle, Redis TTL, replay prevention, session invalidation, EmailService behavior, event/audit emission, response schemas, error contracts, authorization requirements, transaction boundaries, sensitive-token logging) was found consistent with the locked PRD/Architecture/API spec and with K.3's own prior findings — no further defect found.** One observation, not a defect: the broad `except Exception` handlers added in K.3 (fixes 1-3) log `%s`-formatted exception objects; `httpx`'s own exception `__str__` representations are URL/status-based, not request-body-based, so the raw verification/reset token (which lives only in the email's HTML body, never the request URL) is not expected to leak through these log lines — judged low-risk and not altered, since the alternative (scrubbing every logged exception message) is unrequested scope expansion for a risk that doesn't concretely materialize given how `httpx`'s exceptions are constructed.
+
+**Scope-creep check (no git tool available — done by direct, exhaustive file re-read instead of `git diff`):** the only file touched in this follow-up pass was `apps/api/app/modules/auth/service.py` (one-line import fix). No other file was modified. `pyproject.toml` was not touched, per explicit instruction. No PRD/Architecture/API/DB document was modified.
+
+**A. Exact files created/modified this session:**
+- Modified: `apps/api/app/modules/research/service.py` (added `apply_moderation_status` — bug fix 1), `apps/api/alembic/env.py` (added missing `moderation` models import — bug fix 2), `apps/api/app/modules/auth/service.py` (3 exception-handling fixes + removed now-unused `EmailServiceError` import), `apps/api/app/integrations/email_service.py` (httpx ImportError guard), `apps/api/app/modules/auth/schemas.py` (3 new response schemas), `apps/api/app/modules/auth/router.py` (wired the 3 new response schemas).
+- Created: `apps/api/tests/test_moderation_pure_logic.py` (11 tests, executed in sandbox, passed), `apps/api/tests/test_auth_flows.py` (19 tests, written only, not executed anywhere).
+- Updated: `work_memory.md` (this entry).
+- NOT modified: `pyproject.toml` (the `httpx` gap is flagged, not fixed, per explicit scope).
+
+**B. Source-level verification performed:** see K.2–K.3 in full above — summarized: 2 moderation bugs + 5 auth issues found via direct code read/cross-check against the locked API spec and existing established patterns (not guessed); every fix verified by direct diff; the `httpx` guard and moderation's pure-logic constants were additionally verified by genuine execution in an isolated sandbox with zero connection to the real project; `app.main` import and full OpenAPI route resolution genuinely re-confirmed after all edits.
+
+**C. Tests added but NOT executed (anywhere — real host or otherwise):** all 19 tests in `test_auth_flows.py`. (`test_moderation_pure_logic.py`'s 11 tests WERE executed, but only in the isolated sandbox, not against the real repository — distinguished precisely, not lumped in with C.)
+
+**D. Unresolved implementation concerns:**
+1. `httpx` missing from base `[project.dependencies]` — flagged, not fixed (out of scope).
+2. Verification/reset tokens stored as raw Redis keys rather than hashed — judged acceptable for MVP, flagged as a future hardening item.
+3. `moderation` has no integration test file yet (DB-touching paths for `create_report`/`take_action`/`suspend_member` remain unverified beyond manual code review).
+4. The `reinstate`/`resolution_action` CHECK-constraint contradiction remains genuinely unresolved at the specification level — requires a founder decision (amend the DB CHECK to add a `'reinstated'` value, or formally accept `resolution_action IS NULL` as the correct outcome for a reinstate).
+5. This session cannot confirm whether the pre-existing `.pytest_cache`/`.venv` evidence (K.1) reflects a currently-passing state after these edits — only that something with real execution access ran 79 tests successfully at some point before `moderation`/these auth fixes existed.
+
+**E. Exact commands to run on the real host to verify everything:**
+```bash
+cd ~/Projects/QFinance/apps/api
+source .venv/bin/activate   # or however the existing venv is activated
+PYTHONPATH=. pytest -q                              # full suite, all modules
+PYTHONPATH=. pytest -q tests/test_moderation_pure_logic.py tests/test_auth_flows.py -v   # this session's new tests specifically (test_auth_flows.py tests are all skip-marked — expect 19 skipped, not passed, unless someone also implements the fixtures referenced in their signatures: client, db_session, existing_user, etc.)
+python3 -c "import app.main; print(len(app.main.app.openapi()['paths']), 'paths')"   # sanity: should be more than 38 now that auth's response models changed (path count itself is unchanged; verify the /auth/* schemas specifically via /docs or the raw openapi.json)
+alembic upgrade head          # only if a genuinely new migration were needed — it is NOT for this session's changes (no new tables/columns), so this should already be a no-op given 0001 already covers moderation_rules/moderation_actions/reports
+```
+Git status/diff review is recommended before any commit, since this session made source edits across `research`, `alembic`, and `auth` — no commit or push was made or claimed.
+
+---
+
+## Part L — Session 2026-09-11 — QFinance V2 restructure: Portfolio (Zerodha, read-only) implemented; `journal` found pre-existing
+
+### L.1 Provenance, established before any action (same discipline as every prior session)
+This session's task claimed a "V2" product direction, founder-approved read-only broker connectivity, and a specific baseline ("77 passed, 44 skipped, 0 failed"). None of this was assumed — verified directly:
+- All five `*_V2.md` documents (PRD/Architecture/Database/API/UI-UX) genuinely exist alongside their V1 counterparts, confirmed via direct `list_directory` on each `docs/` subfolder before reading any of them.
+- `apps/api/.pytest_cache/v/cache/lastfailed` was `{}` (zero recorded failures) and `nodeids` listed **121 total tests**, matching `77 passed + 44 skipped` exactly. This **corroborates** the claimed baseline but does **not** constitute this session independently executing or confirming it — that run happened via some channel with real execution access to the host, outside every tool available in this session (see Part K.1's tooling-boundary finding, re-confirmed unchanged this session: `bash_tool` has no path to `/home/prd/Projects/QFinance` and no reachable Postgres/Redis; `Filesystem` MCP has no execution capability at all).
+- `apps/api/app/modules/journal/` (full vertical slice: models/schemas/service/router) was found **already implemented** on disk, matching PRD V2 §4.2/API Spec V2 §1 exactly — discovered via `directory_tree` before assuming it needed to be built, and via the pytest `nodeids` list showing `test_journal_pure_logic.py` already existing. **Not attributed to this session** — read and reused as an established pattern (private-only, owner-scoped 404-not-403 on non-owner access, soft-delete), not rewritten.
+- `apps/api/app/modules/portfolio/` and `apps/api/app/integrations/brokers/` did **not** exist — confirmed via the same `directory_tree` check. This session's actual new work.
+
+### L.2 Portfolio implementation (Architecture V2 §3, API Spec V2 §7 PF.1–PF.4)
+**Files created:**
+- `app/integrations/brokers/base.py` — `BrokerAdapter` Protocol (structural typing, matching the existing `PaymentService`/`EmailService` abstraction pattern) — exactly 4 methods (`get_login_url`, `exchange_request_token`, `fetch_holdings`, `fetch_positions`), none order/trade/modify-shaped, enforcing BOUND-001's read-only requirement structurally rather than by convention alone. `BrokerConnectionError`/`BrokerNotConfiguredError` exception types, mirroring `payment_service.py`'s existing `PaymentServiceError` split.
+- `app/integrations/brokers/zerodha.py` — `ZerodhaAdapter`, the sole MVP implementation. Lazy `import kiteconnect` inside `_get_kite_client()`, guarded with `except ImportError` — applying the exact fix pattern from Part K.3's `email_service.py` audit correctly from the start here, rather than needing a later fix. No `access_token`/`api_secret`/`request_token` ever appears in any log line (verified by reading every `logger.*` call in the file — only operation names and Zerodha's own non-secret `kite_user_id` are logged).
+- `app/modules/portfolio/{models,schemas,service,router}.py` — `BrokerConnection` ORM model matching Database Schema V2 §1's `broker_connections` table exactly (checked column-for-column against the locked doc before writing). `access_token` does not appear in any Pydantic schema in `schemas.py` at all — not masked, not optional-and-omitted, simply never defined as a field anywhere in this module's API surface, so no future careless `response_model` change could leak it. Every route (`PF.1–PF.4`) requires `require_verified_email`; ownership is structural (`user_id` always comes from the authenticated session, never a path/query parameter — there is no way to request another user's portfolio, not merely a check that blocks it).
+- `apps/api/alembic/versions/0004_broker_connections.py` — additive-only, matches the locked table definition exactly. **Scope note, stated explicitly:** Database Schema V2 also specifies `ratings`/`contributions`/`credit_ledger` (new tables) and `posts.post_type`/`comments.parent_comment_id` (new columns) — none of these are part of this migration; they remain open for whichever future session implements Community's V2 delta / Ratings / Contributions. Not bundled in, not silently skipped — named here.
+- `app/core/config.py` — added `ZERODHA_API_KEY`/`ZERODHA_API_SECRET` (both `str | None = None`), matching the existing `RAZORPAY_KEY_ID`-unset-is-safe pattern exactly.
+- `apps/api/app/api/v1/router.py`, `apps/api/alembic/env.py` — wired `portfolio_router` and the new models import respectively.
+
+**Tests:** `test_portfolio_pure_logic.py` (11 tests — DB Schema CHECK-constraint constants, `service.get_login_url`'s two branches against a `FakeBrokerAdapter`, 4 tests of the REAL `ZerodhaAdapter`'s safe-when-unconfigured behavior, and a structural BOUND-001 characterization test asserting the adapter's public method set contains no order/trade/buy/sell/modify/execute/place-named method). `test_portfolio_integration.py` (11 tests, all `@pytest.mark.skip`'d — requires real Postgres).
+
+**Sandbox verification performed (isolated, not the real host — same K.1 boundary):** `py_compile`/`import app.main`/`app.openapi()` route resolution all passed after reconstructing the full dependency graph including `journal`, `portfolio`, and `brokers/` from content read fresh off the real repo. The `ZerodhaAdapter` unconfigured-safety tests were genuinely executed and passed with **no** `ZERODHA_API_KEY`/`ZERODHA_API_SECRET` set in the sandbox (a real, if incidental, match to this session's actual ambient state at the time) — see Part M below for the more rigorous version of this same check done for the follow-up bug report.
+
+**Not done (frontend Portfolio screen, credits/ratings modules, extensive security-review documentation beyond what's stated above):** explicitly deferred given this task's scope; `journal`'s pre-existing frontend page (`apps/web/app/(app)/portfolio/page.tsx`) was discovered to already exist (see Part M's frontend directory listing) but its content was not audited this session — flagged, not assumed correct.
+
+---
+
+## Part M — Follow-up session — 2 real bugs fixed: portfolio test isolation, Next.js Suspense build failure
+
+### M.1 Issue 1 — Portfolio test-isolation bug (test-only fix, production code untouched)
+**Reported:** 4 of `test_portfolio_pure_logic.py`'s "real `ZerodhaAdapter`, no credentials" tests failed once the developer's local `.env` gained placeholder `ZERODHA_API_KEY`/`ZERODHA_API_SECRET` values (intentional, for parallel GUI work) — `82 passed, 4 failed, 57 skipped`.
+
+**Root cause, confirmed by direct code read before touching anything:** `zerodha.py` does `settings = get_settings()` once at **module import time** (the same singleton pattern used by every other integration module in this codebase). The 4 affected tests constructed a real `ZerodhaAdapter()` and relied on this session's *ambient* environment having no Zerodha credentials — correct when originally written (Part L.2), but not actually isolated from whatever the environment happens to contain at test-run time. Once the `.env` gained placeholder values, `_require_configured()` no longer raised, and the tests failed differently than expected (reaching further into `_get_kite_client()`).
+
+**Fix (tests only, exactly as instructed — zero production code touched):** added an `unconfigured_zerodha` pytest fixture to `test_portfolio_pure_logic.py` that `monkeypatch.setattr()`s the two attributes on the specific already-imported `zerodha_module.settings` object (not env vars, not `.env`, not `config.py`'s `Settings` class — the one already-cached instance `zerodha.py` actually reads) to `None` for the duration of each of the 4 tests; `monkeypatch` auto-reverts after each test, so nothing about the developer's real `.env` or any other test is touched or left changed.
+
+**Verification actually performed (genuine, isolated sandbox — NOT the real host, per the unchanged K.1 tooling boundary):**
+1. First **reproduced the exact reported failure mode**: ran a diagnostic copy of one of the 4 tests, *without* the fixture, with `ZERODHA_API_KEY=placeholder_key_gui_wip ZERODHA_API_SECRET=placeholder_secret_gui_wip` set in the sandbox's environment — it genuinely failed (reached past `_require_configured()`, hit a different exception downstream), confirming the root-cause diagnosis was correct, not assumed.
+2. Then ran the **actual fixed test file** under the identical placeholder-configured environment — all 5 relevant tests (the 4 fixed ones, plus a diagnostic control) **passed**, while the intentionally-still-unfixed reproduction test continued to correctly fail — isolating the fixture itself, not some other incidental factor, as what makes the difference.
+3. This is genuine `pytest` execution with real monkeypatching semantics, in an isolated sandbox reconstruction with no path to the real project — **not** a claim that `PYTHONPATH=. pytest -q` was run against the real repository. That must still be run on the real host to produce the "zero failures" result requested.
+
+**No `kiteconnect` real network call was made anywhere** — the sandbox doesn't have the package installed, so even the deliberately-unfixed reproduction test's failure came from the `ImportError`-guard's `BrokerConnectionError` (Part L.2's own fix), never from an actual HTTP request; the real host's behavior may differ slightly in *which* exception fires past `_require_configured()` if `kiteconnect` is actually installed there, but the core mechanism — the fixture correctly forces `_require_configured()` to raise regardless of ambient `.env` state — is what was verified, and that part is environment-independent.
+
+### M.2 Issue 2 — Next.js `useSearchParams()` Suspense boundary (`apps/web/app/(auth)/login/page.tsx`)
+**Reported:** `npm run build` failed with "useSearchParams() should be wrapped in a suspense boundary at page '/login'"; `npm run typecheck` passed.
+
+**Provenance note:** this was the first time this session inspected `apps/web/` at all — a substantial frontend already exists (`(auth)/{login,register}`, `(app)/{community,credits,journal,portfolio,profile,research,saved}`, `layout.tsx`, `lib/`), none of it built or previously seen in this project's `work_memory.md` history before this entry. Not attributed to this session; only `login/page.tsx` was touched, per the explicit "do not modify unrelated QFinance functionality" instruction.
+
+**Fix, the canonical Next.js 14 App Router pattern for this exact error:** the entire page component (a single `"use client"` component calling `useSearchParams()` directly in its default-exported function) was split into an inner `LoginForm` component (unchanged logic, unchanged JSX, unchanged behavior) and a new default-exported `LoginPage` that renders `<Suspense fallback={null}><LoginForm /></Suspense>`. No `dynamic = 'force-dynamic'`, no global static-optimization change — only this one page's export shape changed.
+
+**Verification actually performed, precisely scoped:**
+- **Could NOT run** `npm run typecheck`/`npm run build` against the real project — no tool available in this session has any path to `apps/web`'s real `node_modules`/`next.config`/`tsconfig`/full page set, and reconstructing all of that from scratch in the sandbox would not faithfully represent the real build (unlike the Python backend, where installing the actual PyPI packages via `pip` gives a faithful reconstruction).
+- **Did run**, genuinely, in an isolated sandbox: a real `tsc --noEmit` type-check of the exact fixed file content, using real `typescript`, `react`, `@types/react`, and `next` packages installed via `npm install` (not stubbed out) — **passed with zero errors, exit code 0**. This confirms the TSX is syntactically and type-correct after the edit and introduces no TypeScript regression.
+- **This is explicitly NOT equivalent to `next build`'s prerendering/static-generation analysis** — that specific mechanism (which is what actually produced the reported error, and is what must now report success) requires the real Next.js build pipeline running against the complete real project structure, which was not available to run. The fix follows Next.js's own standard, well-documented remedy for this exact error message; confidence is high, but this is stated as "the correct pattern applied precisely," not as "the build was run and passed."
+
+### M.3 What remains to be run on the real host (both issues)
+```bash
+cd ~/Projects/QFinance/apps/api
+source .venv/bin/activate
+PYTHONPATH=. pytest -q                                          # expect: 0 failed (up from 4 failed)
+PYTHONPATH=. pytest -q tests/test_portfolio_pure_logic.py -v    # the 4 previously-failing tests specifically
+
+cd ~/Projects/QFinance/apps/web
+npm run typecheck                                                # already passing before this fix; confirm still passing
+npm run build                                                    # expect: PASS (was FAILing on /login's useSearchParams error)
+```
+Neither command was run by this session against the real environment — both fixes are genuine source-level corrections, verified as precisely as this session's tooling allows (see M.1/M.2 above for the exact scope of each), but the "zero failures" / "build passes" outcomes themselves must be confirmed on the real host.
+
+### M.4 Updated Part A/C.2 status
+`portfolio`: ✅ implemented (Part L), 1 real test-isolation bug found and fixed this session (test-only, production code unchanged). Frontend: discovered to exist substantially (Part M.2's provenance note) — not previously tracked in this file; one file (`login/page.tsx`) fixed for a genuine Next.js build error. `journal`: ✅, found pre-existing (Part L.1), unchanged this session beyond reuse as a reference pattern.
+
+**Not done:** independent confirmation of either "0 failed" backend result or "build PASS" frontend result — both require real-host execution outside every tool available in this session, stated as the two concrete next actions in M.3.
+
+---
+
 ## Part I — Session 2026-08-31 (cont.) — Membership + Billing verified, 2 real bugs found and fixed
 
 **Starting condition, verified directly (not assumed from Part A's table):** `apps/api/app/modules/membership/` and `apps/api/app/modules/billing/` already existed on disk, fully implemented (models/schemas/service/router for both, plus `billing/pending_checkout_store.py` and `apps/api/app/integrations/{payment_service,invoice_service}.py`), already wired into `api_router` and `alembic/env.py`, and `razorpay>=1.4` already in `pyproject.toml`. **This directly contradicted Part A/C.2 of this file, which listed both as `❌ not created`.** Flagged explicitly rather than silently trusted or silently overwritten — per this file's own repeated history (D.1/D.2) of catching stale status claims. The existing code was read in full before any change was made.
@@ -401,3 +628,57 @@ No other deviation found. `compliance_acknowledgments`/`reports`/`moderation_act
 **Not done in this pass:** `moderation`, `watchlist`, `notifications`, `admin`, frontend, and the broader `users` §2 profile endpoints. Per the standing reasoning (D.1's final rows) — this session focused entirely on finishing `community`'s verification properly (including catching a real test-authoring error, running genuine HTTP-level branch tests, and documenting a real spec ambiguity precisely with an exact PRD quote) rather than starting `moderation` with any of that rigor left undone.
 
 **Recommended next step:** `moderation` (API Spec §5) — depends on `community`'s `posts`/`comments`/`reports` (now implemented and verified) and the already-existing `moderation_rules`/`moderation_actions` tables (already read from and written to by `community/service.py`'s auto-flagging and self-delete paths, so the schema shape is already confirmed correct for `moderation`'s own use). Apply the identical workflow used for `community`: read the actual locked spec section first, inspect the filesystem for undocumented prior work before assuming none exists, cross-check PRD/Architecture/DB/API/UI-UX, implement or verify, get genuine execution verification wherever the environment allows it, and update this file with the same EXECUTED/NOT-EXECUTED precision — before moving on to `watchlist`/`notifications`/`admin`/frontend.
+
+---
+
+## Part L — Session (cont.) — Moderation/Auth close-out, FIRST real-host execution confirmation, and read-only V2 reconciliation
+
+**L.1 — Moderation verification against actual repository files (not sandbox).** Read `moderation/{models,service,router,schemas}.py` fresh. Found and fixed one genuine bug not previously caught: `research/service.py` defined `apply_moderation_status` (and `VALID_MODERATION_STATUSES`) **twice** — the second definition silently shadowed the first; Python doesn't error on this. Deduplicated to a single definition, no behavior change (both versions were logically identical; kept the better-documented one). Separately found `moderation/router.py` had the same class of gap `community`'s `BookmarkListResponse` issue had: `QueueListResponse`, `ModerationActionListResponse`, `MemberActionResponse` all existed in `schemas.py` but were never imported or attached via `response_model=` to `/queue`, `/actions`, `/members/{id}/suspend`, `/members/{id}/reinstate`. Fixed — all four now correctly wired. Confirmed via direct file reads (not sandbox) that: `alembic/env.py` already imports moderation models; `community.router.list_comments` already passes `include_moderated` correctly to `service.list_comments`; `research.list_library`/`search_research` already gate `include_moderated` to staff; all moderation routes wired through `api/v1/router.py`; none of `community`'s/`research`'s `apply_moderation_status_to_*`/`apply_moderation_status` helpers call `db.commit()` (only `db.flush()`) — `moderation.take_action`'s single-transaction requirement holds; the documented reinstate/`resolution_action` contradiction is preserved exactly as designed (`status='resolved'` unconditionally, `resolved_by`/`resolved_at` set, `resolution_action` stays `NULL` for reinstate via `.get()` on a dict with no `'reinstate'` key, `moderation_actions.action='reinstate'` recorded). A syntax-only check (`ast.parse` on the exact edited-file content, in an isolated sandbox, explicitly NOT claimed as real-repo execution) passed for both edited files.
+
+**L.2 — Auth Phase 2/3 implementation (email verification + password reset), real files written.** Read API Spec V1 §1 exactly before writing anything. Built:
+- `app/integrations/email_service.py` (NEW) — Resend-backed, deliberately **fails open** (unlike `payment_service.py`'s fail-loud pattern) since registration isn't feature-flagged off the way billing is: with no `RESEND_API_KEY` configured (true in this environment), returns `{"sent": False, "reason": "no_provider_configured"}` rather than raising, and never logs the raw token/link.
+- `app/modules/auth/token_store.py` (NEW) — Redis-backed, single-use (atomic `GETDEL`, not GET-then-DELETE) verification (24h TTL) and password-reset (1h TTL) tokens, same architectural pattern as `session_store.py`. TTL values are a documented implementation-level judgment call, not a locked-spec number.
+- `app/modules/auth/service.py` — `register()` now generates a verification token and calls `EmailService` (wrapped so a send failure never fails registration itself); added real `verify_email()` (consumes token, sets `email_verified_at`, emits `email_verified` event); `request_password_reset()` now genuinely creates a token + sends email only if the email exists, still always returns success either way (never leaks existence); `confirm_password_reset()` now genuinely validates password policy BEFORE consuming the token (so a weak-password retry doesn't burn a valid link), consumes the token, updates `password_hash`, and calls the already-imported-but-previously-unused `destroy_all_sessions_for_user()`.
+- `app/modules/auth/router.py` — `/auth/verify-email` now calls the real `service.verify_email` instead of always raising `TOKEN_INVALID_OR_EXPIRED`.
+- `app/core/config.py` — added `FRONTEND_BASE_URL` setting (verification/reset links need to point somewhere configurable, not a hardcoded literal).
+- `pyproject.toml` — added `httpx>=0.27` to main `[project.dependencies]` (previously dev-only; `email_service.py` needs it at runtime now, not just for tests).
+- `apps/api/tests/test_email_service_pure_logic.py` (NEW) — 2 tests confirming the fail-open behavior. **Written, not executed by me** — no real host access.
+
+**L.3 — FIRST genuine real-host execution evidence in this project's history, provided directly by the user (not reconstructed by me).** Exact pasted terminal output confirmed:
+```
+PYTHONPATH=. pytest -q tests/test_journal_pure_logic.py -v  →  6 passed
+PYTHONPATH=. pytest -q (full suite)                          →  77 passed, 44 skipped, 6 warnings in 7.48s
+python3 -c "import app.main; print(len(...['paths']))"        →  48 paths
+alembic current                                               →  0003 (head)
+alembic heads                                                 →  0003 (head)
+```
+This is a materially different class of evidence than anything in Parts G–K above — every prior "EXECUTED AND PASSED" claim in this file was execution inside an isolated sandbox reconstruction, explicitly caveated as not-the-real-repository. This is the real repository, on the real host, with real PostgreSQL/Redis running, genuinely confirming: no import errors, no route-collision errors, single Alembic head, 77 real tests passing including (per the file list below) auth/moderation/community/research/membership/billing/journal coverage, 44 skipped (the DB-dependent integration-test stubs across every module, consistent with everything this file has recorded as not-yet-DB-verified).
+
+**L.4 — Real, undocumented-to-me prior work discovered via the same `git status --short` output.** None of the following were built by me, in any turn of this conversation — flagged per this file's own standing provenance discipline (D.1/D.5/J's note):
+- `app/modules/journal/` — an entire module (models/schemas/service/router, per the passing `test_journal_pure_logic.py`) plus `alembic/versions/0003_journal_entries.py` (the current head revision). This maps to something in the newly-discovered V2 documents (L.5) — Journal is a named V2 feature (PRD V2 §4.2) — meaning **someone already started implementing V2 scope** before this reconciliation pass happened, without an explicit go-ahead on the BOUND-001 question raised below.
+- `tests/conftest.py`, `tests/test_auth_flows.py` (19 tests) — exist, untracked, not written by me in this conversation.
+- Provenance of all of the above is unknown to this session — recorded as a gap, not guessed at.
+
+**L.5 — V2 specification reconciliation (READ-ONLY, per explicit instruction — no files edited, no code touched, no Git operations performed).**
+
+Discovered via the same `git status` output: `docs/{PRD,architecture,database,api,uiux}/QFINANCE_*_V2.md`, all untracked, all marked **🟢 ACTIVE**. Read in full. Findings:
+
+- **Provenance:** each V2 doc claims to supersede/adapt its V1 counterpart for its own concern (product direction / module map / schema / endpoints / navigation). None carries a 🔒 LOCKED marker comparable to V1's stamped, dated sign-off.
+- **BOUND-001 status:** PRD V2 §6 explicitly states BOUND-001 "applies with equal force to Portfolio and Community/Thesis Rating" — **stated as preserved, not retired**. But this is asserted, not textually reconciled: BOUND-001's own wording (as re-quoted by the user) prohibits "connect to a broker" and "manage a member's portfolio," and PRD V2 §4.1/Architecture V2 §3/Database Schema V2 §1 describe — in full implementation detail — a Zerodha Kite Connect broker-connection flow and a `broker_connections` table storing a live, connected brokerage account's access token, with on-demand holdings/positions fetch. The only reconciliation offered is PRD V2 §4.1's assertion that this is "read-only... matching V1's BOUND-001 spirit" — no document states an explicit amendment to BOUND-001's text.
+- **Portfolio/broker scope:** Zerodha-only (MVP), `BrokerAdapter` protocol (mirrors `PaymentService`/`EmailService`), read-only (no order placement, explicit no-buy/sell-buttons UI instruction), access_token server-side only/never logged, on-demand fetch (no background sync job). **No formal requirement-ID scheme exists for Portfolio** — every other domain in both V1 and V2 uses one (AUTH-xxx, MEM-xxx, COMM-xxx, etc.); Portfolio does not, a structural gap relative to this project's own established documentation discipline.
+- **Compliance implications explicitly stated:** only the two PRD V2 §6 sentences above. Zero mentions of BOUND-001/OD-01/compliance anywhere in Architecture V2, Database Schema V2, or UI/UX V2 — the compliance framing exists only in the PRD, not threaded through the technical documents the way V1 did for every boundary-adjacent decision.
+- **Cross-document contradictions:** (1) the central BOUND-001-text vs. Portfolio-functionality tension, present within the PRD itself; (2) no document anywhere states "V2 supersedes V1 including BOUND-001" — PRD V2's own wording says the opposite ("still binding"); (3) the three technical V2 documents are internally consistent with each other on Portfolio's *mechanics*, but none engage with the compliance question the PRD raises.
+- **This session did not resolve, reinterpret, or take a position on BOUND-001.** No code was written for Journal/Ratings/Portfolio/Credits. No V1 or V2 document was edited. No migration was created. No Git operation was performed.
+
+**L.6 — Status and recommended next action.**
+
+Auth (email verification + password reset) and Moderation (2 real bugs found/fixed) work from this session is now genuinely confirmed importable/running on the real host per L.3's evidence — though L.3's 77-passed figure reflects the state of the repository *including* the undiscovered `journal`/`test_auth_flows.py` work from L.4, not a clean before/after isolated to just this session's changes; a `git diff`-scoped rerun would be needed to attribute pass/fail purely to this session's edits, and no git tool is available to me to do that scoping myself.
+
+**The Portfolio/BOUND-001 question (L.5) is a founder/compliance decision, not an engineering one, and blocks any further Journal/Ratings/Portfolio/Credits work** — recommended concretely: (1) decide whether read-only broker connectivity is intended to be compatible with BOUND-001 as originally written, and if so amend BOUND-001's text explicitly rather than leaving the tension asserted-but-unresolved; (2) assign Portfolio formal requirement IDs matching every other domain's documentation discipline; (3) given `journal` work has already started ahead of this reconciliation, decide whether to continue V2 domain-by-domain (Journal → Community threading/ratings → Profile, all BOUND-001-independent) while the Portfolio-specific decision is pending separately, rather than blocking the entire V2 restructure on one domain's compliance question.
+
+**Real-host verification commands for this session's Auth/Moderation changes specifically** (not yet run in isolation from the `journal`/`test_auth_flows.py` changes):
+```bash
+cd ~/Projects/QFinance/apps/api
+PYTHONPATH=. pytest -q tests/test_moderation_pure_logic.py tests/test_email_service_pure_logic.py -v
+git diff --stat   # scope-check: confirm exactly which files changed, attributable to which session
+```

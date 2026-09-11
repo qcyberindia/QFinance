@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --cream-0: #fbf8f1;
+  --cream-1: #f3edde;
+  --line: #d8cba9;
+  --brass: #a8863e;
+  --ink: #2b2621;
+  --ink-soft: #5b5347;
+}
+
+html, body {
+  background: var(--cream-0);
+  color: var(--ink);
+  font-family: 'Inter', sans-serif;
+}
+
+.font-display { font-family: 'Fraunces', serif; }
+.font-mono { font-family: 'JetBrains Mono', monospace; }
+
+.qf-card {
+  background: var(--cream-0);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  box-shadow: 0 1px 0 rgba(43,38,33,.06), 0 8px 24px rgba(43,38,33,.06);
+}
+
+.qf-btn-primary {
+  background: var(--ink);
+  color: var(--cream-0);
+  font-weight: 600;
+  padding: 10px 20px;
+  border-radius: 2px;
+  font-size: 13.5px;
+}
+
+.qf-btn-gold {
+  background: var(--brass);
+  color: var(--cream-0);
+  font-weight: 600;
+  padding: 10px 20px;
+  border-radius: 2px;
+  font-size: 13.5px;
+}
+
+.qf-btn-ghost {
+  background: transparent;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  font-weight: 600;
+  padding: 9px 19px;
+  border-radius: 2px;
+  font-size: 13.5px;
+}
+
+.qf-input {
+  border: 1px solid var(--line);
+  background: var(--cream-0);
+  border-radius: 2px;
+  padding: 10px 13px;
+  font-size: 13.5px;
+  width: 100%;
+}
+
+.qf-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+  font-weight: 600;
+}

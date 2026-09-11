@@ -1,0 +1,21 @@
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Next.js generated files
+apps/web/.next/
+apps/web/out/
+
+# Node dependencies
+apps/web/node_modules/
+
+# TypeScript generated state
+*.tsbuildinfo

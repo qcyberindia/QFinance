@@ -18,6 +18,10 @@ class VerifyEmailRequest(BaseModel):
     token: str
 
 
+class VerifyEmailResponse(BaseModel):
+    verified: bool
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -38,9 +42,17 @@ class PasswordResetRequestRequest(BaseModel):
     email: EmailStr
 
 
+class PasswordResetRequestResponse(BaseModel):
+    sent: bool
+
+
 class PasswordResetConfirmRequest(BaseModel):
     token: str
     new_password: str
+
+
+class PasswordResetConfirmResponse(BaseModel):
+    reset: bool
 
 
 class SessionResponse(BaseModel):
