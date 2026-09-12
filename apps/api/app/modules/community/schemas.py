@@ -7,6 +7,7 @@ from app.modules.community.models import CHANNELS
 
 class PostCreateRequest(BaseModel):
     content: str
+    post_type: str = "general"  # V2 API Spec §3 — default preserves V1 request shape
 
 
 class PostPatchRequest(BaseModel):
@@ -23,6 +24,7 @@ class PostResponse(BaseModel):
     id: str
     channel: str | None
     research_id: str | None
+    post_type: str
     author: AuthorRef
     content: str
     created_at: datetime
@@ -51,6 +53,7 @@ class CommentPatchRequest(BaseModel):
 class CommentResponse(BaseModel):
     id: str
     post_id: str
+    parent_comment_id: str | None
     author: AuthorRef
     content: str
     created_at: datetime

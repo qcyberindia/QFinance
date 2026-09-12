@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit_log
 from app.core.errors import Forbidden, NotFound, QFinanceAPIError
 from app.modules.analytics.models import emit_event
-from app.modules.community.models import CHANNELS, Bookmark, Comment, Post, Reaction
+from app.modules.community.models import CHANNELS, POST_TYPES, Bookmark, Comment, Post, Reaction
 from app.modules.users import service as users_service
 
 VALID_TARGET_TYPES = ("post", "comment")
@@ -93,6 +93,14 @@ def validate_channel(channel: str) -> None:
         raise QFinanceAPIError("INVALID_CHANNEL", f"channel must be one of {CHANNELS}.", 400)
 
 
+def validate_post_type(post_type: str) -> None:
+    """V2 API Spec §3 — defaults to 'general' at the schema layer, but an
+    explicitly-invalid value must still be rejected rather than silently
+    coerced, matching every other enum-like validator in this codebase."""
+    if post_type not in POST_TYPES:
+        raise QFinanceAPIError("INVALID_POST_TYPE", f"post_type must be one of {POST_TYPES}.", 400)
+
+
 async def _post_counts(db: AsyncSession, post_id: uuid.UUID) -> tuple[int, int]:
     reaction_count = (await db.execute(
         text("SELECT COUNT(*) FROM reactions WHERE target_type = 'post' AND target_id = :pid"),
@@ -110,7 +118,8 @@ async def serialize_post(db: AsyncSession, post: Post) -> dict:
     reaction_count, comment_count = await _post_counts(db, post.id)
     return {
         "id": str(post.id), "channel": post.channel, "research_id": str(post.research_id) if post.research_id else None,
-        "author": author, "content": post.content, "created_at": post.created_at, "updated_at": post.updated_at,
+        "post_type": post.post_type, "author": author, "content": post.content,
+        "created_at": post.created_at, "updated_at": post.updated_at,
         "is_edited": post.is_edited, "status": post.status,
         "reaction_count": reaction_count, "comment_count": comment_count,
     }
@@ -140,9 +149,12 @@ async def list_channel_posts(db: AsyncSession, *, channel: str, page: int, page_
     return [await serialize_post(db, p) for p in rows], total
 
 
-async def create_channel_post(db: AsyncSession, *, actor_id: uuid.UUID, channel: str, content: str) -> Post:
-    """§4.1.2. CMPL-004 first-post gate + MOD-003 flagged-phrase signal."""
+async def create_channel_post(db: AsyncSession, *, actor_id: uuid.UUID, channel: str, content: str,
+                               post_type: str = "general") -> Post:
+    """§4.1.2 + V2 API Spec §3's `post_type` addition. CMPL-004 first-post gate
+    + MOD-003 flagged-phrase signal, both unchanged from V1."""
     validate_channel(channel)
+    validate_post_type(post_type)
     if not content or not content.strip():
         raise QFinanceAPIError("VALIDATION_ERROR", "Post content cannot be empty.", 400, fields={"content": "required"})
 
@@ -152,7 +164,8 @@ async def create_channel_post(db: AsyncSession, *, actor_id: uuid.UUID, channel:
             "You must acknowledge the Member Charter before posting.", 403,
         )
 
-    post = Post(id=uuid.uuid4(), author_id=actor_id, channel=channel, research_id=None, content=content, status="visible")
+    post = Post(id=uuid.uuid4(), author_id=actor_id, channel=channel, research_id=None,
+                post_type=post_type, content=content, status="visible")
     db.add(post)
     await db.flush()
 
@@ -297,16 +310,24 @@ async def list_research_discussion(db: AsyncSession, *, research_id: uuid.UUID, 
 
 
 async def create_research_discussion_post(db: AsyncSession, *, actor_id: uuid.UUID, research_id: uuid.UUID,
-                                           content: str) -> Post:
+                                           content: str, post_type: str = "general") -> Post:
     """§4.1.6/OD-14 — creates a `posts` row with `research_id` set, `channel=NULL`
     (satisfies `ck_posts_channel_or_research`). Emits `post_created` only —
     `research_commented` fires from the comment endpoint (§4.2.2), never here,
     per Architecture §21.2's exact rule (preserved deliberately, see that
-    endpoint's docstring)."""
+    endpoint's docstring).
+
+    `post_type` defaults to 'general' (unchanged behavior for every existing
+    caller of this function — the plain research-discussion POST endpoint).
+    V2's `POST /research/{id}/publish-to-community` (research/service.py's
+    `publish_to_community`) is the only caller that passes `post_type='thesis'`.
+    """
+    validate_post_type(post_type)
     if not content or not content.strip():
         raise QFinanceAPIError("VALIDATION_ERROR", "Post content cannot be empty.", 400, fields={"content": "required"})
 
-    post = Post(id=uuid.uuid4(), author_id=actor_id, channel=None, research_id=research_id, content=content, status="visible")
+    post = Post(id=uuid.uuid4(), author_id=actor_id, channel=None, research_id=research_id,
+                post_type=post_type, content=content, status="visible")
     db.add(post)
     await db.flush()
 
@@ -323,7 +344,9 @@ async def create_research_discussion_post(db: AsyncSession, *, actor_id: uuid.UU
 async def serialize_comment(db: AsyncSession, comment: Comment) -> dict:
     author = await _load_author(db, comment.author_id)
     return {
-        "id": str(comment.id), "post_id": str(comment.post_id), "author": author, "content": comment.content,
+        "id": str(comment.id), "post_id": str(comment.post_id),
+        "parent_comment_id": str(comment.parent_comment_id) if comment.parent_comment_id else None,
+        "author": author, "content": comment.content,
         "created_at": comment.created_at, "is_edited": comment.is_edited, "status": comment.status,
     }
 
@@ -386,6 +409,39 @@ async def create_comment(db: AsyncSession, *, actor_id: uuid.UUID, post_id: uuid
                           entity_type="research", entity_id=post.research_id)
     await db.commit()
     return comment
+
+
+async def create_reply(db: AsyncSession, *, actor_id: uuid.UUID, comment_id: uuid.UUID, content: str) -> Comment:
+    """V2 API Spec §3's `POST /community/comments/{comment_id}/replies` — same
+    auth/validation/visibility/event rules as `create_comment` (this function
+    delegates the actual row-creation logic there rather than duplicating
+    it), except `post_id` is inherited from the parent comment (never taken
+    from the client) and `parent_comment_id` is set. No depth limit
+    (Architecture V2 §4) — a reply-to-a-reply is valid; the parent for THAT
+    reply is the reply just created, not walked up to the thread root.
+    """
+    parent_comment = await get_comment_or_404(db, comment_id)
+    post = await get_post_or_404(db, parent_comment.post_id)
+    if not _visible_to(post, viewer_id=actor_id, is_staff=False):
+        raise NotFound("Post not found.")
+    if not _visible_to(parent_comment, viewer_id=actor_id, is_staff=False):
+        raise NotFound("Comment not found.")
+    if not content or not content.strip():
+        raise QFinanceAPIError("VALIDATION_ERROR", "Comment content cannot be empty.", 400, fields={"content": "required"})
+
+    reply = Comment(
+        id=uuid.uuid4(), post_id=parent_comment.post_id, author_id=actor_id,
+        parent_comment_id=parent_comment.id, content=content, status="visible",
+    )
+    db.add(reply)
+    await db.flush()
+
+    await _auto_flag_if_needed(db, target_type="comment", target_id=reply.id, author_id=actor_id, content=content)
+    if post.research_id is not None:
+        await emit_event(db, user_id=actor_id, event_type="research_commented",
+                          entity_type="research", entity_id=post.research_id)
+    await db.commit()
+    return reply
 
 
 async def get_comment_or_404(db: AsyncSession, comment_id: uuid.UUID) -> Comment:

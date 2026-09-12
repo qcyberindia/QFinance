@@ -95,10 +95,13 @@ async def create_channel_post(
     db: AsyncSession = Depends(get_db),
     profile: Profile = Depends(require_role("MEMBER")),
 ):
-    """§4.1.2 — Announcements additionally requires MODERATOR/ADMIN post rights (COMM-001)."""
+    """§4.1.2 + V2 API Spec §3's `post_type` — Announcements additionally requires
+    MODERATOR/ADMIN post rights (COMM-001)."""
     if channel == "announcements" and not _is_staff(profile):
         raise Forbidden("Only MODERATOR/ADMIN may post to Announcements.")
-    post = await service.create_channel_post(db, actor_id=profile.user_id, channel=channel, content=body.content)
+    post = await service.create_channel_post(
+        db, actor_id=profile.user_id, channel=channel, content=body.content, post_type=body.post_type,
+    )
     serialized = await service.serialize_post(db, post)
     return serialized
 
@@ -254,6 +257,23 @@ async def delete_comment(
     profile: Profile = Depends(get_current_profile),
 ):
     await service.delete_comment(db, comment_id=comment_id, actor_id=profile.user_id)
+
+
+@router.post("/comments/{comment_id}/replies", response_model=CommentResponse, status_code=201, dependencies=[Depends(require_csrf)])
+async def create_reply(
+    comment_id: uuid.UUID,
+    body: CommentCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(require_role("MEMBER")),
+):
+    """V2 API Spec §3 — same auth (MEMBER) as top-level comment creation;
+    ownership/visibility of the parent comment+post is checked inside
+    service.create_reply. Registered here, alongside
+    /posts/{post_id}/comments, before the fully-dynamic reactions route
+    below (same static-before-dynamic discipline as the rest of this file).
+    """
+    reply = await service.create_reply(db, actor_id=profile.user_id, comment_id=comment_id, content=body.content)
+    return await service.serialize_comment(db, reply)
 
 
 # ---------------------------------------------------------------------------
