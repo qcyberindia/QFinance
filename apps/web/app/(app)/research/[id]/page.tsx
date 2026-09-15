@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api-client";
-import type { ResearchFull } from "@/lib/types";
+import type { Company, CompanyListResponse, ResearchFull } from "@/lib/types";
 import { Card, ErrorState, LoadingState } from "@/components/states";
+import { ThesisCardFromResearch } from "@/components/ThesisCard";
 
 const SECTION_FIELDS: { key: keyof ResearchFull; label: string }[] = [
   { key: "business_quality", label: "Q — Quality" },
@@ -23,9 +24,12 @@ const SECTION_FIELDS: { key: keyof ResearchFull; label: string }[] = [
 export default function ResearchEditorPage() {
   const { id } = useParams<{ id: string }>();
   const [item, setItem] = useState<ResearchFull | null>(null);
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [postingToCommunity, setPostingToCommunity] = useState(false);
+  const [communityPostId, setCommunityPostId] = useState<string | null>(null);
   const [changeNote, setChangeNote] = useState("");
 
   const load = useCallback(async () => {
@@ -40,7 +44,13 @@ export default function ResearchEditorPage() {
 
   useEffect(() => {
     load();
+    api
+      .get<CompanyListResponse>("/companies?page_size=100")
+      .then((d) => setCompanies(d.items))
+      .catch(() => setCompanies([]));
   }, [load]);
+
+  const companyName = companies.find((c) => c.id === item?.company_id)?.name ?? "This company";
 
   function updateField(key: keyof ResearchFull, value: string) {
     setItem((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -79,6 +89,22 @@ export default function ResearchEditorPage() {
     }
   }
 
+  async function handlePublishToCommunity() {
+    if (!item) return;
+    setPostingToCommunity(true);
+    setError(null);
+    try {
+      const post = await api.post<{ id: string }>(`/research/${id}/publish-to-community`, {
+        summary: item.summary,
+      });
+      setCommunityPostId(post.id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not publish this thesis to the community.");
+    } finally {
+      setPostingToCommunity(false);
+    }
+  }
+
   if (error) return <ErrorState message={error} onRetry={load} />;
   if (!item) return <LoadingState label="Loading research…" />;
 
@@ -93,6 +119,10 @@ export default function ResearchEditorPage() {
           <span className="text-xs text-ink-soft">v{item.current_version}</span>
         ) : null}
       </div>
+
+      {item.status === "published" && (
+        <ThesisCardFromResearch research={item} companyName={companyName} />
+      )}
 
       <Card>
         <label className="qf-label">Title</label>
@@ -132,13 +162,23 @@ export default function ResearchEditorPage() {
 
       {error && <p className="text-sm" style={{ color: "#9C4B3F" }}>{error}</p>}
 
-      <div className="flex gap-3">
+      <div className="flex gap-3 flex-wrap">
         <button className="qf-btn-ghost" onClick={handleSave} disabled={saving}>
           {saving ? "Saving…" : "Save Draft"}
         </button>
         <button className="qf-btn-gold" onClick={handlePublish} disabled={publishing}>
           {publishing ? "Publishing…" : item.status === "published" ? "Re-publish" : "Publish"}
         </button>
+        {item.status === "published" && !communityPostId && (
+          <button className="qf-btn-primary" onClick={handlePublishToCommunity} disabled={postingToCommunity}>
+            {postingToCommunity ? "Sharing…" : "Share to Community"}
+          </button>
+        )}
+        {communityPostId && (
+          <a href={`/community/${communityPostId}`} className="qf-btn-primary">
+            View in Community →
+          </a>
+        )}
       </div>
     </div>
   );

@@ -189,3 +189,44 @@ class AccessTierUpdateRequest(BaseModel):
 class AccessTierUpdateResponse(BaseModel):
     id: str
     access_tier: str
+
+
+class MyResearchItem(BaseModel):
+    """API Spec V2 §2 'My Research listing' — own drafts AND published items,
+    unlike §7.4's public library (published-only, all authors). Deliberately
+    thinner than ResearchFullResponse (no Q-RESEARCH section bodies) since
+    this is a scanning list, not the editor view."""
+    id: str
+    title: str
+    summary: str
+    status: str
+    company: CompanyRef
+    research_type: str
+    current_version: int
+    published_at: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MyResearchListResponse(BaseModel):
+    items: list[MyResearchItem]
+    page: int
+    page_size: int
+    total: int
+
+
+class PublishToCommunityRequest(BaseModel):
+    summary: str
+
+
+class PublishToCommunityResponse(BaseModel):
+    """The created community post — same shape as community.schemas.PostResponse,
+    duplicated here (rather than importing community's schema into research) to
+    avoid a cross-module schema import; the actual VALUE returned by the router
+    is built by community/service.py's own serializer, so the two shapes must be
+    kept in sync by hand if either changes — flagged in work_memory.md."""
+    id: str
+    post_type: str
+    research_id: str
+    content: str
+    created_at: datetime

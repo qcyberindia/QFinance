@@ -63,6 +63,23 @@ async def create_or_update_rating(db: AsyncSession, *, actor_id: uuid.UUID, post
         db.add(rating)
 
     await db.commit()
+
+    # Architecture V2 §7 contribution hook — only on a NEW rating (not every
+    # re-rate), otherwise a member could farm credits by repeatedly changing
+    # their own score on the same thesis. `existing is None` at this point
+    # means this call created a brand-new row this time.
+    if existing is None:
+        try:
+            from app.modules.contributions import service as contributions_service
+            await contributions_service.record_rating_received(
+                db, author_id=post.author_id, actor_id=actor_id, post_id=post_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger("qfinance.ratings").exception(
+                "Unexpected error recording rating_received contribution for post_id=%s actor_id=%s",
+                post_id, actor_id,
+            )
     return rating
 
 

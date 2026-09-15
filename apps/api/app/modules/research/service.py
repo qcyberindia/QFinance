@@ -573,3 +573,76 @@ async def set_access_tier(db: AsyncSession, *, research_id: uuid.UUID, actor_id:
     )
     await db.commit()
     return research
+
+
+# ---------------------------------------------------------------------------
+# My Research listing + publish-to-community bridge (API Spec V2 §2, Architecture V2 §5)
+# ---------------------------------------------------------------------------
+
+async def list_my_research(db: AsyncSession, *, author_id: uuid.UUID, page: int, page_size: int) -> tuple[list[dict], int]:
+    """API Spec V2 §2 — the member's OWN drafts AND published items, unlike
+    §7.4's public library (published-only, all authors). Genuinely new: no
+    prior V1 endpoint returned this shape at all (only CSV export existed for
+    'my own research', and only in export form, not JSON)  — confirmed by
+    inspection before writing this, not assumed."""
+    base_filter = (Research.author_id == author_id, Research.deleted_at.is_(None))
+    total = (await db.execute(select(func.count()).select_from(Research).where(*base_filter))).scalar_one()
+    rows = (await db.execute(
+        select(Research).where(*base_filter)
+        .order_by(Research.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
+
+    items = []
+    for r in rows:
+        _, company = await _load_author_and_company(db, author_id=r.author_id, company_id=r.company_id)
+        items.append({
+            "id": str(r.id), "title": r.title, "summary": r.summary, "status": r.status, "company": company,
+            "research_type": r.research_type, "current_version": r.current_version,
+            "published_at": r.published_at.isoformat() if r.published_at else None,
+            "created_at": r.created_at, "updated_at": r.updated_at,
+        })
+    return items, total
+
+
+async def publish_to_community(db: AsyncSession, *, research_id: uuid.UUID, actor_id: uuid.UUID,
+                                summary: str) -> dict:
+    """API Spec V2 §2 `POST /research/{id}/publish-to-community`, Architecture V2
+    §5. Requires the research item to already be `status='published'` — this
+    does NOT publish a draft itself (that's the existing `publish()` function,
+    unchanged, called separately first); this only creates the Community
+    bridge post for an already-published item. Reuses
+    `community.service.create_research_discussion_post` (which already
+    anticipated this exact caller — see that function's own docstring) with
+    `post_type='thesis'`, rather than duplicating post-creation logic here,
+    per Architecture V2 §5's explicit 'reuses posts.research_id... rather than
+    adding a new column' design.
+
+    Does NOT record a contribution here directly — contributions/service.py's
+    `record_thesis_published` is called from the router after this succeeds,
+    keeping this function focused on the bridge itself and the contribution
+    module free of a reverse import back into research."""
+    research = await get_research_or_404(db, research_id)
+    _require_author(research, actor_id)
+    if research.status != "published":
+        raise QFinanceAPIError(
+            "RESEARCH_NOT_PUBLISHED",
+            "Publish this research item first before sharing it to Community.", 400,
+        )
+    if not summary or not summary.strip():
+        raise QFinanceAPIError("VALIDATION_ERROR", "A summary is required.", 400, fields={"summary": "required"})
+
+    # Imported here (not at module top) to avoid a circular import at module
+    # load time: community/service.py imports nothing from research/service.py,
+    # but research/router.py's import graph loads before community's router in
+    # api/v1/router.py, and a top-level `from app.modules.community import
+    # service` here would force community's module (and its own import of
+    # `app.modules.users.service`) to fully resolve during research/service.py's
+    # own import — deferred to call-time instead, matching the same deferred-
+    # import pattern community/router.py itself already uses for research.
+    from app.modules.community import service as community_service
+
+    post = await community_service.create_research_discussion_post(
+        db, actor_id=actor_id, research_id=research_id, content=summary, post_type="thesis",
+    )
+    serialized = await community_service.serialize_post(db, post)
+    return serialized

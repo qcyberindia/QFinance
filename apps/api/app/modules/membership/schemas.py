@@ -21,6 +21,8 @@ class MembershipResponse(BaseModel):
     current_period_end: datetime | None
     grace_period_ends_at: datetime | None
     canceled_at: datetime | None
+    available_credit_paise: int = 0
+    effective_next_period_price_paise: int | None = None
 
 
 class CancelResponse(BaseModel):

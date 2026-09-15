@@ -27,6 +27,7 @@ module. This means COMM-007's acceptance criterion is not independently
 satisfiable until `moderation` ships — flagged explicitly in work_memory.md,
 not hidden.
 """
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -408,6 +409,18 @@ async def create_comment(db: AsyncSession, *, actor_id: uuid.UUID, post_id: uuid
         await emit_event(db, user_id=actor_id, event_type="research_commented",
                           entity_type="research", entity_id=post.research_id)
     await db.commit()
+
+    # Architecture V2 §7 contribution hook — see add_reaction's identical pattern/rationale above.
+    try:
+        from app.modules.contributions import service as contributions_service
+        await contributions_service.record_engagement_received(
+            db, author_id=post.author_id, actor_id=actor_id, target_id=comment.id, engagement_label="Comment",
+        )
+    except Exception:
+        logging.getLogger("qfinance.community").exception(
+            "Unexpected error recording engagement_received contribution for comment_id=%s actor_id=%s",
+            comment.id, actor_id,
+        )
     return comment
 
 
@@ -509,7 +522,15 @@ async def add_reaction(db: AsyncSession, *, actor_id: uuid.UUID, target_type: st
         raise QFinanceAPIError("INVALID_TARGET_TYPE", f"target_type must be one of {VALID_TARGET_TYPES}.", 400)
     if reaction_type != "like":
         raise QFinanceAPIError("INVALID_REACTION_TYPE", "reaction_type must be 'like' (MVP has one type).", 400)
-    if not await _target_exists_and_matches(db, target_type=target_type, target_id=target_id):
+
+    target_author_id: uuid.UUID | None = None
+    if target_type == "post":
+        target = await db.get(Post, target_id)
+        target_author_id = target.author_id if target else None
+    elif target_type == "comment":
+        target = await db.get(Comment, target_id)
+        target_author_id = target.author_id if target else None
+    if target_author_id is None:
         raise NotFound(f"{target_type.capitalize()} not found.")
 
     existing = (await db.execute(
@@ -526,6 +547,27 @@ async def add_reaction(db: AsyncSession, *, actor_id: uuid.UUID, target_type: st
     db.add(reaction)
     # No event emitted — reactions are deliberately untracked in `events` (Architecture §21.2).
     await db.commit()
+
+    # Architecture V2 §7 contribution hook. Deferred import (avoids a
+    # module-load-time cross-import; `contributions` never imports `community`).
+    # Runs AFTER the primary commit, so a contribution-recording failure never
+    # rolls back or blocks the reaction itself — the like is the primary
+    # action; the credit is a secondary side effect. The ONLY expected failure
+    # mode (an idempotent replay) is already handled INSIDE
+    # contributions.service._record via a specific IntegrityError catch and
+    # returns None there — it never raises for that case. Anything else
+    # reaching this except block is a genuine, unexpected bug and is logged
+    # loudly, not silently discarded.
+    try:
+        from app.modules.contributions import service as contributions_service
+        await contributions_service.record_engagement_received(
+            db, author_id=target_author_id, actor_id=actor_id, target_id=target_id, engagement_label="Like",
+        )
+    except Exception:
+        logging.getLogger("qfinance.community").exception(
+            "Unexpected error recording engagement_received contribution for reaction target_id=%s actor_id=%s",
+            target_id, actor_id,
+        )
     return reaction
 
 

@@ -18,8 +18,8 @@ from app.core.db import get_db
 from app.core.deps import get_current_profile, require_csrf, require_role
 from app.modules.research import service
 from app.modules.research.schemas import (
-    AccessTierUpdateRequest, AccessTierUpdateResponse, PublishRequest, ResearchCreateRequest,
-    ResearchCreateResponse, ResearchPatchRequest, SourceCreateRequest, SourceResponse,
+    AccessTierUpdateRequest, AccessTierUpdateResponse, PublishRequest, PublishToCommunityRequest,
+    ResearchCreateRequest, ResearchCreateResponse, ResearchPatchRequest, SourceCreateRequest, SourceResponse,
 )
 from app.modules.users.models import Profile
 
@@ -87,6 +87,20 @@ async def export_csv(
     csv_text = await service.export_csv(db, author_id=profile.user_id)
     return StreamingResponse(iter([csv_text]), media_type="text/csv",
                               headers={"Content-Disposition": "attachment; filename=research_export.csv"})
+
+
+@router.get("/mine")
+async def list_my_research(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(require_role("MEMBER")),
+):
+    """API Spec V2 §2 — registered here, alongside the other static paths
+    (/library, /search, /export.csv), before the dynamic /{research_id}
+    routes below — 'mine' would otherwise be parsed as a research_id."""
+    items, total = await service.list_my_research(db, author_id=profile.user_id, page=page, page_size=page_size)
+    return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +208,26 @@ async def publish_research(
     research = await service.publish(db, research_id=research_id, actor_id=profile.user_id,
                                       change_note=body.change_note)
     return {"status": research.status, "current_version": research.current_version}
+
+
+@router.post("/{research_id}/publish-to-community", dependencies=[Depends(require_csrf)])
+async def publish_to_community(
+    research_id: uuid.UUID,
+    body: PublishToCommunityRequest,
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(require_role("MEMBER")),
+):
+    """API Spec V2 §2. Bridges an already-published research item into a
+    Community thesis post, then records a `thesis_published` contribution
+    (Architecture V2 §7) — a self-engagement guard isn't needed for this
+    specific event (unlike likes/comments/ratings, publishing your own thesis
+    is the intended, sole trigger, not something to filter as 'self-
+    engagement')"""
+    post = await service.publish_to_community(db, research_id=research_id, actor_id=profile.user_id,
+                                               summary=body.summary)
+    from app.modules.contributions import service as contributions_service
+    await contributions_service.record_thesis_published(db, user_id=profile.user_id, research_id=research_id)
+    return post
 
 
 @router.get("/{research_id}/versions")

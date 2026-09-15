@@ -47,7 +47,7 @@ function LoginForm() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="qf-card w-full max-w-sm p-8">
         <div className="font-display text-2xl mb-1">
-          Q<em className="not-italic" style={{ color: "var(--brass)" }}>Finance</em>
+          Qfinera
         </div>
         <p className="text-sm text-ink-soft mb-6">Sign in to your workspace.</p>
 

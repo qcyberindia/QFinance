@@ -3,7 +3,7 @@ import { SessionProvider } from "@/lib/session";
 import "./globals.css";
 
 export const metadata = {
-  title: "QFinance",
+  title: "Qfinera",
   description: "Investor workspace and investment community.",
 };
 

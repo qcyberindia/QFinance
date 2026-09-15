@@ -16,11 +16,18 @@ export interface AuthorRef {
   username: string | null;
 }
 
+export interface RatingSummary {
+  average: number | null;
+  count: number;
+  my_rating: number | null;
+}
+
 // ---- Community ----
 export interface Post {
   id: string;
   channel: string | null;
   research_id: string | null;
+  post_type: "discussion" | "thesis" | "announcement";
   author: AuthorRef;
   content: string;
   created_at: string;
@@ -29,17 +36,20 @@ export interface Post {
   status: string;
   reaction_count: number;
   comment_count: number;
+  rating?: RatingSummary;
 }
 export interface PostListResponse { items: Post[]; page: number; page_size: number; total: number }
 
 export interface Comment {
   id: string;
   post_id: string;
+  parent_comment_id: string | null;
   author: AuthorRef;
   content: string;
   created_at: string;
   is_edited: boolean;
   status: string;
+  replies?: Comment[];
 }
 export interface CommentListResponse { items: Comment[]; page: number; page_size: number; total: number }
 
@@ -128,3 +138,40 @@ export interface ConnectionStatusResponse {
 // ---- Companies (for association pickers) ----
 export interface Company { id: string; name: string; exchange: string }
 export interface CompanyListResponse { items: Company[]; total: number; page: number; page_size: number }
+
+// ---- My Research (API Spec V2 §2) ----
+export interface MyResearchItem {
+  id: string;
+  title: string;
+  summary: string;
+  status: "draft" | "published";
+  company: { id: string; name: string | null };
+  research_type: string;
+  current_version: number;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface MyResearchListResponse { items: MyResearchItem[]; page: number; page_size: number; total: number }
+
+// ---- Profile (API Spec V2 §6, public, read-only) ----
+export interface PublicPostSummary { id: string; post_type: string; content: string; created_at: string }
+export interface PublicProfile {
+  username: string;
+  name: string | null;
+  bio: string | null;
+  published_posts_count: number;
+  published_theses_count: number;
+  contribution_points: number;
+  recent_posts: PublicPostSummary[];
+}
+
+// ---- Credits / Q-Points (API Spec V2 §8) ----
+export interface CreditLedgerEntry { amount_paise: number; reason: string; created_at: string }
+export interface CreditsSummary {
+  balance_paise: number;
+  entries: CreditLedgerEntry[];
+  page: number;
+  page_size: number;
+  total: number;
+}

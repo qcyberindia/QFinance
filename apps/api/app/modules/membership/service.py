@@ -84,23 +84,41 @@ async def get_current_subscription(db: AsyncSession, user_id: uuid.UUID) -> Subs
 
 
 async def get_my_membership(db: AsyncSession, user_id: uuid.UUID) -> dict:
-    """API Spec §3.1.2."""
+    """API Spec §3.1.2, extended by API Spec V2 §8 (C.2) with
+    `available_credit_paise`/`effective_next_period_price_paise` — additive
+    fields, existing consumers of this dict that don't know about them are
+    unaffected. Deferred import (not at module top) to avoid `membership`
+    and `contributions` forming an import-time coupling neither module
+    otherwise needs — `contributions` never imports `membership`."""
+    from app.modules.contributions import service as contributions_service
+
     subscription = await get_current_subscription(db, user_id)
     if subscription is None:
+        available_credit_paise, effective_price_paise = await contributions_service.calculate_effective_premium_price_paise(
+            db, user_id=user_id, plan_price_paise=0,
+        )
         return {
             "plan_code": "FREE",
             "status": "active",
             "current_period_end": None,
             "grace_period_ends_at": None,
             "canceled_at": None,
+            "available_credit_paise": available_credit_paise,
+            "effective_next_period_price_paise": effective_price_paise,
         }
     plan = await db.get(Plan, subscription.plan_id)
+    plan_price = plan.price_paise if plan else 0
+    available_credit_paise, effective_price_paise = await contributions_service.calculate_effective_premium_price_paise(
+        db, user_id=user_id, plan_price_paise=plan_price,
+    )
     return {
         "plan_code": plan.code if plan else "FREE",
         "status": subscription.status,
         "current_period_end": subscription.current_period_end,
         "grace_period_ends_at": subscription.grace_period_ends_at,
         "canceled_at": subscription.canceled_at,
+        "available_credit_paise": available_credit_paise,
+        "effective_next_period_price_paise": effective_price_paise,
     }
 
 

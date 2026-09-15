@@ -46,7 +46,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Desktop sidebar */}
       <aside className="hidden md:flex md:flex-col md:w-60 md:shrink-0 border-r" style={{ borderColor: "var(--line)", background: "var(--cream-1)" }}>
         <div className="font-display text-lg px-5 py-5 border-b" style={{ borderColor: "var(--line)" }}>
-          Q<em className="not-italic" style={{ color: "var(--brass)" }}>Finance</em>
+          Qfinera
         </div>
         <nav className="flex-1 py-3">
           {NAV_ITEMS.map((item) => {
@@ -79,7 +79,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Mobile top bar */}
       <div className="md:hidden flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: "var(--line)", background: "var(--cream-1)" }}>
         <div className="font-display text-lg">
-          Q<em className="not-italic" style={{ color: "var(--brass)" }}>Finance</em>
+          Qfinera
         </div>
         <button className="qf-btn-ghost text-xs" onClick={() => logout().then(() => router.replace("/login"))}>
           Log out
