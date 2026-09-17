@@ -26,7 +26,7 @@ async def acknowledge_charter(db: AsyncSession, *, user_id: uuid.UUID) -> Compli
     Charter text changes later)."""
     ack = ComplianceAcknowledgment(
         id=uuid.uuid4(), user_id=user_id, acknowledgment_type="member_charter",
-        document_version=settings.MEMBER_CHARTER_VERSION, acknowledged_at=datetime.now(timezone.utc),
+        document_version=settings.MEMBER_CHARTER_VERSION, acknowledged_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(ack)
     await db.commit()
@@ -50,7 +50,7 @@ async def acknowledge_risk_disclosure(db: AsyncSession, *, user_id: uuid.UUID, c
         )
     ack = ComplianceAcknowledgment(
         id=uuid.uuid4(), user_id=user_id, acknowledgment_type="risk_disclosure",
-        document_version=settings.RISK_DISCLOSURE_VERSION, acknowledged_at=datetime.now(timezone.utc),
+        document_version=settings.RISK_DISCLOSURE_VERSION, acknowledged_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(ack)
     await db.commit()
