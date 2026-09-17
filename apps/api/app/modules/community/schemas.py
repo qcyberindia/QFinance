@@ -15,8 +15,10 @@ class PostPatchRequest(BaseModel):
 
 
 class AuthorRef(BaseModel):
+    """SECURITY FIX (this pass): `name` removed — previously exposed the
+    real registration name on every post/comment author. `username` is the
+    only public, pseudonymous identity attached to community content."""
     id: str
-    name: str | None = None
     username: str | None = None
 
 

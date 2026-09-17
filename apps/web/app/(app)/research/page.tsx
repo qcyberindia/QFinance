@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { api, ApiError } from "@/lib/api-client";
-import type { Company, CompanyListResponse } from "@/lib/types";
-import { Card, NotAvailableYet } from "@/components/states";
+import type { Company, CompanyListResponse, MyResearchItem, MyResearchListResponse } from "@/lib/types";
+import { Card, EmptyState, ErrorState, LoadingState } from "@/components/states";
 
 const RESEARCH_TYPES = ["deep_dive", "quick_take", "sector_note"];
 
@@ -14,8 +15,11 @@ export default function ResearchPage() {
   const [companyId, setCompanyId] = useState("");
   const [researchType, setResearchType] = useState(RESEARCH_TYPES[0]);
   const [title, setTitle] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+
+  const [items, setItems] = useState<MyResearchItem[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -24,14 +28,30 @@ export default function ResearchPage() {
       .catch(() => setCompanies([]));
   }, []);
 
+  const loadMine = useCallback(async () => {
+    setListError(null);
+    try {
+      // Real endpoint: GET /research/mine (API Spec V2 §2) — the member's own
+      // drafts AND published items, distinct from the public /research/library.
+      const data = await api.get<MyResearchListResponse>("/research/mine");
+      setItems(data.items);
+    } catch (err) {
+      setListError(err instanceof ApiError ? err.message : "Could not load your research.");
+    }
+  }, []);
+
+  useEffect(() => {
+    loadMine();
+  }, [loadMine]);
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!companyId) {
-      setError("Choose a company first.");
+      setCreateError("Choose a company first.");
       return;
     }
     setCreating(true);
-    setError(null);
+    setCreateError(null);
     try {
       const created = await api.post<{ id: string }>("/research", {
         company_id: companyId,
@@ -40,7 +60,7 @@ export default function ResearchPage() {
       });
       router.push(`/research/${created.id}`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not start this research item.");
+      setCreateError(err instanceof ApiError ? err.message : "Could not start this research item.");
     } finally {
       setCreating(false);
     }
@@ -77,19 +97,46 @@ export default function ResearchPage() {
             <label className="qf-label">Working title (optional)</label>
             <input className="qf-input" value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
-          {error && <p className="text-sm" style={{ color: "#9C4B3F" }}>{error}</p>}
+          {createError && <p className="text-sm" style={{ color: "#9C4B3F" }}>{createError}</p>}
           <button type="submit" disabled={creating} className="qf-btn-primary">
             {creating ? "Creating…" : "Start Draft"}
           </button>
         </form>
       </Card>
 
-      {/* GENUINE BACKEND GAP: there is no "list my own research (drafts +
-          published)" JSON endpoint in the current backend — only the public
-          /research/library (published-only, all authors) and
-          /research/export.csv (CSV, not JSON) exist. This is documented in
-          work_memory.md rather than faked with a wrong endpoint call. */}
-      <NotAvailableYet feature="Your research list" />
+      <div>
+        <h2 className="font-display text-lg mb-3">Your research</h2>
+        {listError && <ErrorState message={listError} onRetry={loadMine} />}
+        {!listError && items === null && <LoadingState label="Loading your research…" />}
+        {!listError && items !== null && items.length === 0 && (
+          <EmptyState title="No research yet" body="Start a draft above to begin building your first thesis." />
+        )}
+        {!listError && items !== null && items.length > 0 && (
+          <div className="space-y-3">
+            {items.map((item) => (
+              <Link key={item.id} href={`/research/${item.id}`} className="block">
+                <Card>
+                  <div className="flex items-center justify-between mb-1">
+                    <span
+                      className="text-xs font-semibold uppercase tracking-wide"
+                      style={{ color: item.status === "published" ? "var(--brass)" : "var(--ink-soft)" }}
+                    >
+                      {item.status}
+                    </span>
+                    <span className="text-xs text-ink-soft">{item.company.name ?? "Unknown company"}</span>
+                  </div>
+                  <div className="font-display text-base">{item.title}</div>
+                  <p className="text-sm text-ink-soft line-clamp-2">{item.summary}</p>
+                  <p className="text-xs text-ink-soft mt-2">
+                    Updated {new Date(item.updated_at).toLocaleDateString()}
+                    {item.status === "published" ? ` · v${item.current_version}` : ""}
+                  </p>
+                </Card>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

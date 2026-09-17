@@ -45,7 +45,12 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
         settings.CSRF_COOKIE_NAME, csrf_token,
         httponly=False, secure=True, samesite="lax", max_age=settings.SESSION_TTL_SECONDS,
     )
-    return LoginResponse(user=LoginResponseUser(id=str(user.id), email=user.email, name="", username=""))
+    from app.modules.users.models import Profile
+    profile = await db.get(Profile, user.id)
+    return LoginResponse(user=LoginResponseUser(
+        id=str(user.id), email=user.email,
+        name=profile.name if profile else "", username=profile.username if profile else "",
+    ))
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_csrf)])
@@ -74,4 +79,8 @@ async def session(user: User = Depends(get_current_user), db: AsyncSession = Dep
     profile = await db.get(Profile, user.id)
     roles = profile.role_grants if profile else []
     effective_tier = "CORE" if "MEMBER" in roles else "FREE"
-    return SessionResponse(user_id=str(user.id), email=user.email, roles=roles, effective_tier=effective_tier)
+    return SessionResponse(
+        user_id=str(user.id), email=user.email,
+        username=profile.username if profile else "", name=profile.name if profile else "",
+        roles=roles, effective_tier=effective_tier,
+    )

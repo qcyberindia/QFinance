@@ -59,4 +59,4 @@ class PortfolioResponse(BaseModel):
     holdings: list[HoldingItem]
     positions: list[PositionItem]
     last_synced_at: datetime
-    read_only_notice: str = "Read-only — QFinance cannot place trades."
+    read_only_notice: str = "Read-only — Qfinera cannot place trades."

@@ -106,10 +106,10 @@ class ResearchFullResponse(BaseModel):
 
 class AuthorRef(BaseModel):
     """Nested author reference — API Spec §7.4.1/§7.4.2 library/search response
-    contract. `name`/`username` may be null if the profile lookup ever fails
-    to resolve (defensive; should not happen for a real author_id)."""
+    contract. SECURITY FIX (this pass): `name` removed — previously exposed
+    the author's real registration name on every public library/search item;
+    `username` is the only public identity a research item's author has."""
     id: str
-    name: str | None = None
     username: str | None = None
 
 

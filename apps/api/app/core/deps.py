@@ -71,6 +71,42 @@ def require_role(*roles: str) -> Callable:
     return _dependency
 
 
+async def require_verified_profile(
+    user: User = Depends(get_current_user),
+    profile: Profile = Depends(get_current_profile),
+) -> Profile:
+    """Basic/Pro community-and-research PARTICIPATION gate — Qfinera MVP product
+    decision (explicit founder instruction, live smoke-test fix): Basic (the
+    ₹0 tier, role_grants=['FREE_MEMBER']) and Pro users alike may post, comment,
+    reply, rate, bookmark, and publish research/theses to the community, since
+    community participation IS the product's network-effect growth engine, not
+    a Pro-exclusive perk. This supersedes the earlier require_role('MEMBER')
+    gate previously used on those specific endpoints (which implemented a
+    'Core membership' paywall model API Spec V1/V2's own text technically
+    still describes for those routes — the founder instruction explicitly
+    overrides that reading for the live Qfinera product; V1/V2 doc text is
+    NOT edited to match, per instruction, since this file only touches active
+    code, not historical/locked documents).
+
+    Deliberately identical enforcement to `require_verified_email` (Authenticated
+    + Verified, no role/tier check at all) — kept as a separate, distinctly-named
+    dependency rather than reusing require_verified_email directly, so every call
+    site that was a deliberate Basic-tier product decision reads as one at a
+    glance, distinct from a plain "needs verified email" check elsewhere for
+    unrelated reasons. Returns Profile (not User) since every call site needs
+    profile.user_id/role_grants for ownership/staff checks downstream, same as
+    require_role's dependency did.
+
+    Does NOT touch: moderation/staff gates (require_role('MODERATOR'/'ADMIN'/...)),
+    ADMIN-only access-tier classification, ownership checks inside service.py,
+    self-rating prohibition, contribution idempotency, or CSRF — none of those
+    used require_role('MEMBER') and none are changed by this.
+    """
+    if user.email_verified_at is None:
+        raise Forbidden("Please verify your email address to continue.")
+    return profile
+
+
 async def require_csrf(
     request: Request,
     x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),

@@ -15,8 +15,21 @@ DEFAULT_RECENT_POSTS_LIMIT = 10
 
 
 async def get_public_profile(db: AsyncSession, *, username: str) -> dict:
+    """SECURITY FIX (this pass): previously selected and returned `profiles.name`
+    (the user's real display name, collected at registration) directly in this
+    PUBLIC, unauthenticated endpoint's response — a live violation of the
+    explicit 'never auto-connect real identity → public community identity'
+    requirement. `name` is no longer selected from the database here at all
+    (not just dropped from the response) — the query itself now only reads
+    `bio`, so there's no real-name value in scope to leak even if a future
+    change to the return dict got careless. `username` IS the public,
+    pseudonymous identity (already a separate, independently-chosen, unique
+    CITEXT column from `name` — Architecture already supports pseudonymous
+    handles like 'Investor_4821' today; this pass does not add automatic
+    pseudonym GENERATION, which would need its own schema/UX decision and is
+    out of scope for this fix — see work_memory.md)."""
     profile_row = (await db.execute(
-        text("SELECT user_id, name, bio FROM profiles WHERE username = :username"),
+        text("SELECT user_id, bio FROM profiles WHERE username = :username"),
         {"username": username},
     )).first()
     if profile_row is None:
@@ -51,7 +64,6 @@ async def get_public_profile(db: AsyncSession, *, username: str) -> dict:
 
     return {
         "username": username,
-        "name": profile_row.name,
         "bio": profile_row.bio,
         "published_posts_count": published_posts_count,
         "published_theses_count": published_theses_count,

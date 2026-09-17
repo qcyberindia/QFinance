@@ -58,5 +58,7 @@ class PasswordResetConfirmResponse(BaseModel):
 class SessionResponse(BaseModel):
     user_id: str
     email: str
+    username: str
+    name: str
     roles: list[str]
     effective_tier: str

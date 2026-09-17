@@ -44,11 +44,20 @@ VALID_TARGET_TYPES = ("post", "comment")
 
 
 async def _load_author(db: AsyncSession, author_id: uuid.UUID) -> dict:
+    """SECURITY FIX (this pass): previously also selected and returned
+    `profiles.name` (the real registration name) for every post/comment
+    author, alongside `username` — the identical real-identity leak already
+    found and fixed in profile/service.py's public endpoint, just not yet
+    applied here. The core loop's 'PSEUDONYMOUS COMMUNITY IDENTITY' step
+    requires `username` to be the only public identity attached to any
+    community content; `name` is no longer selected from the database at
+    all in this query, so there is no real-name value in scope to leak
+    even if a future change to the return dict got careless."""
     row = (await db.execute(
-        text("SELECT user_id, name, username FROM profiles WHERE user_id = :uid"), {"uid": str(author_id)},
+        text("SELECT user_id, username FROM profiles WHERE user_id = :uid"), {"uid": str(author_id)},
     )).first()
-    return ({"id": str(row.user_id), "name": row.name, "username": row.username} if row
-            else {"id": str(author_id), "name": None, "username": None})
+    return ({"id": str(row.user_id), "username": row.username} if row
+            else {"id": str(author_id), "username": None})
 
 
 async def _match_flagged_phrases(db: AsyncSession, content: str) -> list[str]:

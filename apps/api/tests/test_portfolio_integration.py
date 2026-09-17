@@ -72,7 +72,7 @@ async def test_get_portfolio_returns_holdings_and_positions_from_adapter(
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["holdings"]) > 0
-    assert body["read_only_notice"] == "Read-only — QFinance cannot place trades."
+    assert body["read_only_notice"] == "Read-only — Qfinera cannot place trades."
 
 
 @pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")

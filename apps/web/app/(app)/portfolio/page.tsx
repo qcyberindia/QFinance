@@ -47,7 +47,7 @@ export default function PortfolioPage() {
       <div>
         <h1 className="font-display text-2xl">Portfolio</h1>
         <p className="text-sm text-ink-soft">
-          Read-only view of your Zerodha holdings. QFinance cannot place trades or modify your account.
+          Read-only view of your Zerodha holdings. Qfinera cannot place trades or modify your account.
         </p>
       </div>
 

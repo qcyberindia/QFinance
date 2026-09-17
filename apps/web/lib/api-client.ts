@@ -49,7 +49,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(`${API_BASE}${path}`, { ...init, method, headers, credentials: "include" });
   } catch (networkErr) {
-    throw new ApiError(0, "NETWORK_ERROR", "Could not reach the QFinance server. Check your connection.");
+    throw new ApiError(0, "NETWORK_ERROR", "Could not reach the Qfinera server. Check your connection.");
   }
 
   if (response.status === 204) {

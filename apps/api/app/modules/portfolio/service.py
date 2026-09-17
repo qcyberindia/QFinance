@@ -141,5 +141,5 @@ async def get_portfolio(db: AsyncSession, *, user_id: uuid.UUID, adapter: Broker
     return {
         "holdings": holdings, "positions": positions,
         "last_synced_at": connection.last_synced_at,
-        "read_only_notice": "Read-only — QFinance cannot place trades.",
+        "read_only_notice": "Read-only — Qfinera cannot place trades.",
     }

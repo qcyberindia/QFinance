@@ -10,7 +10,7 @@ from app.core.errors import QFinanceAPIError, qfinance_error_handler, unhandled_
 
 settings = get_settings()
 
-app = FastAPI(title="QFinance API", version="1.0.0")
+app = FastAPI(title="Qfinera API", version="1.0.0")
 
 app.add_exception_handler(QFinanceAPIError, qfinance_error_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)

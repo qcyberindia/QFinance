@@ -12,13 +12,14 @@ class PublicPostSummary(BaseModel):
 
 
 class PublicProfileResponse(BaseModel):
-    """Never includes journal/drafts/broker/portfolio fields — this Pydantic
+    """Never includes name/journal/drafts/broker/portfolio fields — this Pydantic
     model simply has no field name for any of them, so a future careless
     change to service.py can add extra dict keys without them ever reaching
     the client (FastAPI's response_model drops unknown keys silently), per
-    PRD V2 §4.7's explicit privacy requirement."""
+    PRD V2 §4.7's explicit privacy requirement. `name` specifically removed
+    this pass (was a live real-identity leak — see profile/service.py) —
+    `username` is the public, pseudonymous identity."""
     username: str
-    name: str | None
     bio: str | None
     published_posts_count: int
     published_theses_count: int

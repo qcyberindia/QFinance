@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.core.deps import get_current_profile, get_current_user, require_csrf, require_role, require_verified_email
+from app.core.deps import get_current_profile, get_current_user, require_csrf, require_role, require_verified_email, require_verified_profile
 from app.core.errors import Forbidden
 from app.modules.auth.models import User
 from app.modules.community import service
@@ -62,25 +62,21 @@ async def list_channel_posts(
     profile: Profile = Depends(get_current_profile),
     user: User = Depends(get_current_user),
 ):
-    """§4.1.1 — exact auth tier per endpoint, not a blanket rule: any
-    Authenticated caller (regardless of email-verification status) may GET
-    'announcements'; every other channel requires Authenticated + Verified
-    (checked here, since Verified is conditional on the channel and can't be
-    expressed as a single unconditional Depends) AND MEMBER.
+    """Basic/Pro product decision (see require_verified_profile's docstring):
+    every channel, including non-announcements, is readable by any
+    Authenticated + Verified user — the earlier `if not _is_member(profile):
+    raise Forbidden('This channel requires Core membership.')` block is
+    REMOVED. 'announcements' additionally never required Verified either
+    (still true, preserved below) — the only remaining distinction between
+    channels here is that non-announcements requires email verification,
+    matching every other participation gate in this file.
 
-    `include_moderated` (API Spec §10 end note / §12 item 3) is passed through
-    to service.list_channel_posts along with a server-computed `is_staff` —
-    the service layer only honors the flag when BOTH are true (see that
-    function's docstring), so this auth-tier gate above and the
-    include_moderated staff-only gate below are independent and neither
-    bypasses the other: a non-staff caller cannot use include_moderated to
-    skip the Verified/MEMBER check above, and passing this check doesn't
-    grant moderated-content visibility on its own."""
+    `include_moderated` (API Spec §10 end note / §12 item 3) is unaffected by
+    this change — still passed through to service.list_channel_posts along
+    with a server-computed `is_staff`, still only honored when both are true."""
     if channel != "announcements":
         if user.email_verified_at is None:
             raise Forbidden("Please verify your email address to continue.")
-        if not _is_member(profile):
-            raise Forbidden("This channel requires Core membership.")
     items, total = await service.list_channel_posts(
         db, channel=channel, page=page, page_size=page_size,
         include_moderated=include_moderated, is_staff=_is_staff(profile),
@@ -93,10 +89,13 @@ async def create_channel_post(
     channel: str,
     body: PostCreateRequest,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
-    """§4.1.2 + V2 API Spec §3's `post_type` — Announcements additionally requires
-    MODERATOR/ADMIN post rights (COMM-001)."""
+    """Basic/Pro product decision: posting no longer requires the old MEMBER
+    ('Core membership') role_grant — only Authenticated + Verified
+    (require_verified_profile). Announcements still additionally requires
+    MODERATOR/ADMIN post rights (COMM-001) — that check is a moderation
+    boundary, not a tier boundary, and is UNCHANGED."""
     if channel == "announcements" and not _is_staff(profile):
         raise Forbidden("Only MODERATOR/ADMIN may post to Announcements.")
     post = await service.create_channel_post(
@@ -104,6 +103,29 @@ async def create_channel_post(
     )
     serialized = await service.serialize_post(db, post)
     return serialized
+
+
+@router.get("/posts/{post_id}", response_model=PostResponse)
+async def get_post(
+    post_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(get_current_profile),
+    user: User = Depends(get_current_user),
+):
+    """NEW this pass — genuinely absent before (confirmed: only list-by-channel
+    and list-comments existed, no single-post fetch). Blocked the frontend
+    post-detail page from ever showing the post's own content/author/
+    post_type (needed for the Thesis Card) — only the comment thread was
+    reachable. Same visibility gate as list_comments (which already needed
+    to fetch the post via get_post_or_404 internally anyway, just never
+    exposed it): non-announcements channels require Verified; Basic/Pro
+    product decision applies identically to reading a single post as it
+    does to listing them."""
+    post = await service.get_post_or_404(db, post_id)
+    if post.channel is not None and post.channel != "announcements":
+        if user.email_verified_at is None:
+            raise Forbidden("Please verify your email address to continue.")
+    return await service.serialize_post(db, post)
 
 
 @router.patch("/posts/{post_id}", response_model=PostResponse, dependencies=[Depends(require_csrf)])
@@ -139,17 +161,18 @@ async def list_research_discussion(
     profile: Profile = Depends(get_current_profile),
     _: User = Depends(require_verified_email),
 ):
-    """§4.1.5 — Authenticated + Verified (unconditional here, unlike §4.1.1's
-    announcements exception), plus 'tier rules per LIB-003': a caller who
-    cannot see the research item's full content (i.e. gets a preview, not the
-    full representation) cannot see its discussion either, since MEM-003
-    lists 'research discussions' as Core-gated in its own right, not merely
-    inherited from the research item's own tier gate."""
-    view = await research_service.get_research_view(
+    """Basic/Pro product decision: research discussions are readable by any
+    Authenticated + Verified user, same as every other community surface —
+    the earlier `if view.get("preview"): raise Forbidden('Research
+    discussions require Core membership.')` block is REMOVED. Visibility of
+    the underlying research item's actual CONTENT (core vs free_example
+    access_tier) is unaffected by this change — that gate lives in
+    research_service.get_research_view itself and still applies; this only
+    removes the discussion-specific MEMBER overlay that previously sat on
+    top of it."""
+    await research_service.get_research_view(
         db, research_id, viewer_id=profile.user_id, viewer_is_member=_is_member(profile), is_staff=_is_staff(profile),
     )
-    if view.get("preview"):
-        raise Forbidden("Research discussions require Core membership.")
     items, total = await service.list_research_discussion(db, research_id=research_id, page=page, page_size=page_size)
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 
@@ -159,7 +182,7 @@ async def create_research_discussion_post(
     research_id: uuid.UUID,
     body: PostCreateRequest,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     # Confirms the research item exists and is visible before allowing discussion on it.
     await research_service.get_research_view(
@@ -207,19 +230,9 @@ async def list_comments(
     if post.channel is not None and post.channel != "announcements":
         if user.email_verified_at is None:
             raise Forbidden("Please verify your email address to continue.")
-        if not _is_member(profile):
-            raise Forbidden("This channel requires Core membership.")
-    # post.channel is None => a research-linked post (§4.1.6) — §4.2.1 inherits
-    # the same requires-MEMBER gate §4.1.6 applies to posting in that discussion,
-    # since MEM-003 lists "research discussions" as Core-gated in their own
-    # right (see the FLAGGED, UNRESOLVED spec question in work_memory.md about
-    # §4.1.5's narrower reading of this same rule — this comments-read path
-    # is NOT ambiguous the same way, because §4.2.1's "same as parent post"
-    # wording directly ties it to whatever gate governs the post, and §4.1.6
-    # unambiguously requires MEMBER for research-linked posts).
-    elif post.channel is None and post.research_id is not None:
-        if not _is_member(profile):
-            raise Forbidden("This discussion requires Core membership.")
+    # Basic/Pro product decision: the prior MEMBER-only gates for
+    # non-announcements channels and research-linked discussions are REMOVED
+    # here too, matching the parent post's own (now-Basic-accessible) read gate.
 
     items, total = await service.list_comments(
         db, post_id=post_id, viewer_id=profile.user_id, is_staff=_is_staff(profile), page=page, page_size=page_size,
@@ -233,7 +246,7 @@ async def create_comment(
     post_id: uuid.UUID,
     body: CommentCreateRequest,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     comment = await service.create_comment(db, actor_id=profile.user_id, post_id=post_id, content=body.content)
     return await service.serialize_comment(db, comment)
@@ -264,7 +277,7 @@ async def create_reply(
     comment_id: uuid.UUID,
     body: CommentCreateRequest,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     """V2 API Spec §3 — same auth (MEMBER) as top-level comment creation;
     ownership/visibility of the parent comment+post is checked inside
@@ -284,7 +297,7 @@ async def create_reply(
 async def add_bookmark(
     body: BookmarkCreateRequest,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     bookmark = await service.add_bookmark(db, actor_id=profile.user_id, post_id=uuid.UUID(body.post_id))
     return BookmarkCreateResponse(id=str(bookmark.id))
@@ -294,7 +307,7 @@ async def add_bookmark(
 async def remove_bookmark(
     post_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     await service.remove_bookmark(db, actor_id=profile.user_id, post_id=post_id)
 
@@ -304,7 +317,7 @@ async def list_bookmarks(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     items, total = await service.list_bookmarks(db, actor_id=profile.user_id, page=page, page_size=page_size)
     return {"items": items, "page": page, "page_size": page_size, "total": total}
@@ -321,7 +334,7 @@ async def add_reaction(
     target_id: uuid.UUID,
     body: ReactionCreateRequest,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     reaction = await service.add_reaction(
         db, actor_id=profile.user_id, target_type=target_type, target_id=target_id, reaction_type=body.reaction_type,
@@ -334,6 +347,6 @@ async def remove_reaction(
     target_type: str,
     target_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("MEMBER")),
+    profile: Profile = Depends(require_verified_profile),
 ):
     await service.remove_reaction(db, actor_id=profile.user_id, target_type=target_type, target_id=target_id)

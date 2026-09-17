@@ -6,13 +6,14 @@
 export interface SessionResponse {
   user_id: string;
   email: string;
+  username: string;
+  name: string;
   roles: string[];
   effective_tier: "FREE" | "CORE";
 }
 
 export interface AuthorRef {
   id: string;
-  name: string | null;
   username: string | null;
 }
 
@@ -27,7 +28,7 @@ export interface Post {
   id: string;
   channel: string | null;
   research_id: string | null;
-  post_type: "discussion" | "thesis" | "announcement";
+  post_type: "general" | "thesis" | "question" | "discussion";
   author: AuthorRef;
   content: string;
   created_at: string;
@@ -158,7 +159,6 @@ export interface MyResearchListResponse { items: MyResearchItem[]; page: number;
 export interface PublicPostSummary { id: string; post_type: string; content: string; created_at: string }
 export interface PublicProfile {
   username: string;
-  name: string | null;
   bio: string | null;
   published_posts_count: number;
   published_theses_count: number;

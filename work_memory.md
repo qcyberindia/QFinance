@@ -786,3 +786,263 @@ git diff --stat   # scope-check: confirm exactly which files changed, attributab
 
 **Recommended next steps, in order:** (1) wire the six frontend pages against the now-real backend endpoints (this is now unblocked — all the backend pieces those pages need now genuinely exist); (2) tier restructuring (Basic/Pro/Business) — touches `membership`'s `Plan` model/seed data and `billing`'s checkout flow, still keeping `CORE_BILLING_ENABLED=False`; (3) Qfinera rebrand — purely user-facing strings/labels, lowest technical risk, can happen in parallel with either of the above; (4) Investment Thesis Card UI, once the underlying research/community/ratings data it displays is confirmed reachable from the frontend; (5) hand the user the exact `alembic upgrade head` (now targeting `0006`) / `pytest` / `npm run typecheck` / `npm run build` / `git status`/`diff`/`commit` sequence once 1–4 are done — never claim any of those pass without genuine execution.
 
+---
+
+## Part O — Session (cont.) — Basic/Pro RBAC change (live smoke-test bug), then a critical real-identity leak found and fixed
+
+**O.1 — Live smoke-test bug reported: Basic (FREE_MEMBER) user got "You do not have permission" clicking Community "Post."** This was an explicit, direct founder product-strategy instruction (Qfinera MVP redefined as Basic/₹0/Pro/₹299/Business, with community participation as the Basic-tier growth engine), not a spec re-interpretation on my own initiative — recorded as such because it reverses a reading (`MEMBER`-gated community/research/ratings participation) that an earlier session in this same file (M.1) had explicitly confirmed as *correct* per the then-locked V2 API spec text. Both are true statements at different points in time; this entry doesn't overwrite M.1's finding, it records the deliberate strategy change that superseded it.
+
+**Root cause, confirmed by reading actual current source before touching anything:** every community/research/ratings *participation* endpoint (`create_channel_post`, `create_comment`, `create_reply`, `add_bookmark`/`remove_bookmark`/`list_bookmarks`, `add_reaction`/`remove_reaction`, `create_research_discussion_post`, `rate_post`/`remove_rating`) used `Depends(require_role("MEMBER"))` — a paid-tier gate. `list_channel_posts` and `list_comments` additionally had inline `if not _is_member(profile): raise Forbidden("This channel requires Core membership.")` blocks for non-announcements channels and research-linked discussions.
+
+**Fix implemented:**
+- **`core/deps.py`**: new `require_verified_profile` dependency — Authenticated + Verified only, no role/tier check, returns `Profile` (so callers still get `profile.user_id`/`role_grants` for ownership/staff checks downstream). Deliberately a separate, distinctly-named dependency from `require_verified_email` (not a reuse) so every call site that represents this specific Basic-tier product decision reads as one at a glance in the diff/codebase, distinct from an unrelated plain verified-email check elsewhere.
+- **`community/router.py`**: all nine `require_role("MEMBER")` participation gates listed above replaced with `require_verified_profile`. Both inline `_is_member` blocks (channel-read gate, comments-read gate) removed entirely — posts/comments in every channel (not just announcements) and research-linked discussions are now readable by any Authenticated+Verified user.
+- **`research/router.py`**: `create_research_discussion_post`'s `require_role("MEMBER")` → `require_verified_profile`, same reasoning.
+- **`ratings/router.py`**: `rate_post`/`remove_rating`'s `require_role("MEMBER")` → `require_verified_profile`.
+- **Explicitly UNCHANGED, confirmed by inspection, not assumed**: announcements-channel posting still requires `MODERATOR`/`ADMIN` (`_is_staff` check — a moderation boundary, not a tier boundary); `set_access_tier` still `ADMIN`/`SUPER_ADMIN`-only; every ownership check inside `service.py` functions (author-only edit/delete, own-rating-only removal); the self-rating prohibition (`CANNOT_RATE_OWN_THESIS`); the entire N.3 contribution-idempotency mechanism (actor_id/unique-constraint/narrow-except design); CSRF on every mutating route. None of these used `require_role("MEMBER")` and none were touched.
+
+**Explicitly NOT done in that turn, despite being requested in the same message:** the reported Community category-pill navigation CSS overflow/clipping bug ("help questi..." cut off at the right edge) — **no frontend CSS file was read or edited for this.** Flagged here so it isn't mistaken for fixed; it remains an open, reported UI bug.
+
+**No execution performed** — same standing limitation, no tool reaches the real host.
+
+**O.2 — Separately, an enormous follow-up scope request ("FINAL MVP SCOPE FREEZE + DEADLINE EXECUTION": pseudonymous identity system, Q&A as a new first-class pillar, portfolio-evidence-on-thesis, full 9-page frontend, full rebrand audit, tests/typecheck/build/runtime-smoke-test/git-checks/commit) was explicitly triaged rather than attempted wholesale**, given the mismatch between that scope and a single pass's realistic capacity — consistent with this file's own repeated caught-and-corrected pattern (D.1/G/L/M.2) of preferring one verified fix over broad shallow sprawl. Prioritized per the request's own stated order (TRUST/PRIVACY first) and checked the single highest-risk item first rather than starting anywhere else.
+
+**Real, live bug found and fixed — not hypothetical:** `GET /profile/{username}` (public, unauthenticated, API Spec V2 §6/P.1) was returning `profiles.name` — the user's real display name, collected and required at registration — directly in its response. This is a direct violation of the explicit "never auto-connect real identity → public community identity" requirement, and was live (reachable by anyone, no auth needed) at the time it was found.
+
+**Fix:**
+- `profile/service.py`: the SQL query no longer selects `name` at all (not merely omitted from the return dict) — there is no real-name value in scope in this function anymore, so a future careless edit can't reintroduce the leak by just adding a dict key back.
+- `profile/schemas.py`: `PublicProfileResponse` no longer has a `name` field — belt-and-suspenders with the above (FastAPI's `response_model` silently drops unknown dict keys, so even if service.py regressed, the field still couldn't reach the client).
+- Frontend `lib/types.ts`'s `PublicProfile` and `/profile/page.tsx` updated to match: the profile page now shows only `@username` with an explicit "your real name is never shown here" line, replacing the old `profile.name || profile.username` fallback display.
+
+**Confirmed, not newly built:** `Profile.username` (unique `CITEXT`, independently chosen from `name` at registration) already functions as a mechanically-separate pseudonymous identity — verified via direct model inspection. **No automatic pseudonym GENERATOR was built** — users still choose their own username at registration; nothing enforces it isn't itself identity-revealing. That remains a real, stated gap against the request's §3, not silently claimed as done.
+
+**O.3 — Explicitly NOT done in the O.2 pass, stated plainly per that turn's own final report (not repeated in full detail here — see the conversation's own response for the complete itemized list):** Q&A subsystem (doesn't exist anywhere in the codebase — would need new models/endpoints from scratch), portfolio-evidence-attached-to-thesis, pseudonym auto-generation, Investment Thesis Card UI component, full old-brand grep-style audit, remaining frontend page completion (`/community/[postId]` threading UI, `/credits`, `/journal` re-verification, the still-unfixed category-pill CSS bug from O.1), and all test/typecheck/build/runtime-smoke-test/git-status/commit steps. No commit was created — correctly withheld, since the requested scope is nowhere near complete, and no git tool exists in this session regardless.
+
+**O.4 — Status.** Two real, confirmed bugs found and fixed this session (Basic-tier RBAC lockout; live real-name leak on the public profile endpoint), both via direct source inspection before editing, both scoped narrowly to avoid touching unrelated authorization boundaries. The much larger Qfinera MVP scope-freeze request remains substantially unimplemented — recorded honestly as such, not glossed over.
+
+#### Recommended next steps
+1. Fix the still-open category-pill CSS overflow bug (O.1) — small, isolated, no backend dependency.
+2. Decide and implement pseudonym handling: either enforce/encourage non-identifying usernames at registration (validation rule) or build an actual auto-generator (`Investor_4821`-style) — the request explicitly prefers auto-generation but accepts reusing the existing username mechanism if a full generator is out of scope; needs an explicit decision, not another silent assumption.
+3. Build the Q&A subsystem from scratch if it's genuinely required for MVP — confirm this against the locked API Spec V2 first (per this file's standing discipline: read the actual doc before writing model/schema/endpoint code), since no trace of it exists in any V2 document read so far in this file's history.
+4. Portfolio-evidence-on-thesis (optional holding disclosure, quantities hidden) — check `portfolio`/`research` schemas for what already exists before adding anything.
+5. Investment Thesis Card UI component, once 3–4 are far enough along to have real data to show.
+6. Full rebrand grep audit (`grep -Rni "QFinance\|QFINANCE\|qfinance" .`, excluding `.git`/`.next`/`node_modules`/`__pycache__`) — not run by me, no execute access; hand this command to the user directly.
+7. Only after 1–6: full test suite, frontend typecheck/build, runtime smoke test, `git status`/`diff --check`/`diff --stat`, and only then a single commit — all require the user's own execution, same standing limitation throughout this file.
+
+---
+
+## Part P — Session (Emergency privacy verification pass) — public-profile real-name leak fix VERIFIED with genuine executed tests
+
+**Provenance:** the fix itself (removing `profiles.name` from `GET /profile/{username}`'s query and response schema) is already fully documented in Part O.2, from a prior session this one has no visibility into. This session's task opened with "You reported that this was fixed" — no such report exists in this file from *this* session; the claim traces to O.2. **This session's actual contribution is independent verification of that fix, via genuinely executed tests, not the fix itself.**
+
+**What was re-confirmed by direct read (matches O.2 exactly):** `profile/service.py`'s SQL query selects only `user_id, bio` from `profiles` — no `name` column referenced anywhere in the executable code. `profile/schemas.py`'s `PublicProfileResponse` has no `name`/`email`/`journal`/`draft`/`broker`/`portfolio`-shaped field. `profile/router.py`'s `GET /profile/{username}` has no auth dependency (correctly public).
+
+**Did not stop at "code looks right" — wrote and genuinely executed `apps/api/tests/test_profile_privacy.py` (3 tests)** in an isolated sandbox (exact real file content, real `pytest`, real `pydantic` — not the real host):
+1. Schema-level: `PublicProfileResponse`'s actual Pydantic field set has no intersection with an explicit forbidden-field list.
+2. Schema-level, stricter: field set equals an exact allow-list.
+3. Source-level: the SQL query text never mentions `profiles.name`/`SELECT name`.
+
+**First run found a real failure** — investigated and confirmed it was this session's own test-authoring mistake, not a code defect: `inspect.getsource()` includes the function's docstring, and that docstring's prose legitimately discusses the old `profiles.name` leak as part of explaining the fix, which false-positived a naive substring check against documentation rather than executable code. Directly parallel to the `_visible_to`/staff-override test mistake caught in Part J of this file — same class of honest error, caught the same way (by actually running the test), not assumed away. Fixed by stripping the docstring before checking. **Final result: 3/3 passed**, genuinely, against the exact real file content.
+
+**Not done, given the scope of the full task relative to a single pass:** the Q&A-via-post_type feature, Investment Thesis Card frontend polish, portfolio-holding-evidence-on-thesis, the full `grep`-based rebrand audit (still no content-search tool available), remaining frontend page verification (`/research`, `/journal`, `/portfolio`), and — as with every prior session — no `pytest`/`npm`/`git` execution against the real host. Chosen deliberately: the task itself named privacy verification first and most urgent ("DEADLINE MODE... prioritizing a small, coherent, secure MVP over feature completeness"), and splitting effort across the other ~12 sections would have meant none of them received real verification either.
+
+**Exact commands for host-side verification:**
+```bash
+cd ~/Projects/QFinance/apps/api
+./.venv/bin/python -m pytest -q
+./.venv/bin/python -m pytest tests/test_profile_privacy.py -v
+
+cd ~/Projects/QFinance/apps/web
+npm run typecheck
+npm run build
+
+cd ~/Projects/QFinance
+grep -Rni --exclude-dir=.git --exclude-dir=.next --exclude-dir=node_modules --exclude-dir=__pycache__ "QFinance\|QFINANCE\|qfinance" .
+```
+
+**Recommended next step:** Q&A via existing `post_type` — the task frames this as "the only major missing feature worth implementing now," and `POST_TYPES` already includes `"question"` in `community/models.py` per Part L/M's V2 delta, so this is very likely a thin frontend/UX layer over already-existing backend capability, not a new subsystem — verify that precisely before writing any new code.
+
+---
+
+## Part Q — Session (Real-state audit + privacy test strengthened per review feedback)
+
+**Tooling boundary, unchanged, re-stated:** no `git`/`pytest`/`npm` execution access exists in any tool available to this session. The task's Phase 1 asked for `git status --short`/`git log`/`git diff --check` output — not run; audit performed via direct file inspection instead, which is reliable for "does X exist / is X wired" but cannot substitute for `git diff` in scoping exactly what changed since a given commit.
+
+**Phase 1 — module wiring audit, via direct read of `api/v1/router.py` (not assumed from documentation or prior report):**
+
+| Module | Status (this pass's direct finding) |
+|---|---|
+| auth | IMPLEMENTED — wired |
+| users | IMPLEMENTED (compliance-ack endpoints only, per J) — wired |
+| companies | IMPLEMENTED — wired |
+| research | IMPLEMENTED (incl. `/mine`, `/publish-to-community` per N) — wired |
+| membership | IMPLEMENTED — wired |
+| billing | IMPLEMENTED — wired |
+| community | IMPLEMENTED, incl. **replies endpoint confirmed present** (`POST /community/comments/{id}/replies`, `require_verified_profile`) — previously flagged "unconfirmed" in Part M.3, now directly verified by reading the full file; also confirmed the Basic-tier RBAC change from Part O.1 is intact (no `require_role("MEMBER")` remaining on any participation endpoint in this file) — wired |
+| ratings | IMPLEMENTED — wired |
+| moderation | IMPLEMENTED — wired |
+| journal | IMPLEMENTED — wired |
+| portfolio | IMPLEMENTED — wired |
+| contributions (`/credits`) | IMPLEMENTED — wired |
+| profile | IMPLEMENTED — wired |
+| watchlist / notifications / admin | NOT IMPLEMENTED — confirmed absent by directory listing (unchanged from every prior session's finding) |
+
+**Q&A, specifically checked (Phase 3's core-loop item):** `community/router.py`'s `create_channel_post`/`create_channel_post`'s `PostCreateRequest.post_type` accepts any of `POST_TYPES` (includes `"question"`, confirmed in `community/models.py` per the V2 delta) through the SAME generic post/comment/reply endpoints — no separate Q&A subsystem exists, and per the task's own instruction ("do not build an unnecessary new Q&A subsystem... reuse Community"), **none is needed at the backend level**. Functionally: **PARTIALLY IMPLEMENTED** — the full Question→Answer(comment)→Reply→Reaction loop is backend-complete via existing generic endpoints, but there is no dedicated "accepted answer" marking (not required by V2 per prior sessions' spec reads) and no frontend Q&A-specific presentation/labeling.
+
+**Phase 2 — Privacy verification, addressing the explicit review feedback directly.** The task correctly flagged that Part P's `test_get_public_profile_source_does_not_select_real_name_column` used `inspect.getsource()` docstring/text matching — a weak test in principle (it tests today's query text, not the actual response boundary, and is fragile to refactoring). **Replaced it** with a genuine behavioral test: `test_public_profile_http_response_cannot_leak_real_name_even_if_row_has_it` builds a real (minimal) FastAPI app containing the actual `profile.router`, overrides `get_db` with a fake session engineered to return a row that DOES carry a `name`-shaped attribute (simulating the exact regression scenario — a future change that reintroduces `SELECT ... name ...`), fires a real HTTP request through `TestClient`, and asserts the actual JSON response and raw response text contain neither the field name `"name"` nor the fake real-name value anywhere. This directly tests the mechanism the code's own docstring claims protects it (`response_model`'s silent field-filtering), not just today's source text. The two schema-introspection tests (field-set assertions) were kept, since those were never the part of the test file under criticism and remain valid, real checks.
+
+**Genuinely executed** (isolated sandbox — real `fastapi`/`pydantic`/`sqlalchemy`/`httpx`/`pytest`, exact real `profile/{schemas,service,router}.py` content, real `TestClient` HTTP request cycle; NOT the real host): **3/3 passed**, including the new behavioral test.
+
+**Other Phase 2 items checked by direct read, matching Part O.2's already-documented findings (not re-litigated, confirmed still true):** no `email`/password-hash field anywhere in `PublicProfileResponse`; `profile/router.py` has no auth dependency (correctly public per API Spec V2 §6); `portfolio/schemas.py` (checked in Part L, re-confirmed by directory presence this pass, not re-read line-by-line given time constraints) has no `access_token` field in any response schema.
+
+**Not done this pass, given the scope of Phases 3–15 relative to available effort:** the full V2 gap analysis beyond the module-wiring table above, any new implementation, the rebrand audit, frontend work, and — as always — no test/build/git execution. This pass prioritized exactly what its own task named as blocking ("do not redo the privacy work, but the full repo hasn't been verified" + the explicit test-quality critique) over attempting further breadth.
+
+### Final report, per the requested format
+
+**## REAL CURRENT STATE** — all 12 backend modules listed in the table above are implemented and wired; `watchlist`/`notifications`/`admin` remain genuinely absent.
+
+**## IMPLEMENTED THIS PASS** — only `apps/api/tests/test_profile_privacy.py`'s content changed (source-inspection test replaced with a genuine HTTP-behavioral test); no production code was modified this pass.
+
+**## PRIVACY** — re-verified by direct read (matches Part O.2): no `name`/`email` in the public profile query or response schema. Newly, genuinely proven via a real HTTP request against a deliberately-adversarial fake DB row that the response_model boundary itself would block a real-name leak even if the query regressed — 3/3 tests passed in an isolated sandbox.
+
+**## Q&A** — backend-complete via existing generic post/comment/reply endpoints with `post_type="question"`; no dedicated subsystem exists or is needed; no frontend Q&A presentation built.
+
+**## THESIS** — unchanged from Part N: `research`'s My Research + `publish-to-community` bridge implemented; not re-verified line-by-line this pass.
+
+**## Q-POINTS** — unchanged from Part N: `contributions` module with the actor_id/unique-constraint idempotency design; not re-verified line-by-line this pass.
+
+**## PROFILE** — public: username, bio, post/thesis counts, contribution points, recent visible posts. Private (structurally excluded from the schema): name, email, journal, drafts, broker credentials, portfolio.
+
+**## PORTFOLIO** — unchanged from Part L: `BrokerConnection`/`ZerodhaAdapter`, read-only, `access_token` never in any response schema; not re-verified line-by-line this pass.
+
+**## REBRAND** — not audited this pass; Part N's status stands (rebrand not started).
+
+**## BACKEND TESTS** — NOT RUN against the real host (no execution access). `test_profile_privacy.py`'s 3 tests genuinely executed in an isolated sandbox: 3/3 passed.
+
+**## FRONTEND TYPECHECK** — NOT RUN.
+
+**## FRONTEND BUILD** — NOT RUN.
+
+**## GIT** — NOT RUN (`git status`/`branch`/`log`/`diff` all require execution access this session does not have).
+
+**## REMAINING GAPS** — Phases 3–15 of this task's own request (full gap analysis beyond module-wiring, rebrand, frontend, real test/build/git execution) remain undone, consistent with every prior session's honest scoping in this file.
+
+**Exact commands for the user to run:**
+```bash
+cd /home/prd/Projects/QFinance
+git status --short
+git branch --show-current
+git log --oneline -8
+git diff --stat
+git diff --check
+
+cd apps/api
+./.venv/bin/python -m pytest -q
+./.venv/bin/python -m pytest tests/test_profile_privacy.py -v
+
+cd ../web
+npm run typecheck
+npm run build
+```
+
+---
+
+## Part R — Session (Final active-surface rebrand pass) — real host verification reported as complete by the user (89 passed/57 skipped, frontend typecheck+build PASS, `git diff --check` PASS); this session's scope was rebrand-only, no feature/architecture changes
+
+**Fixed (7 files, all confirmed real user-facing strings by direct read before editing, not guessed):**
+1. `apps/api/app/main.py` — `FastAPI(title="QFinance API", ...)` → `"Qfinera API"`. `QFinanceAPIError`/`qfinance_error_handler` imports left untouched (explicitly listed technical identifiers).
+2. `apps/api/app/integrations/email_service.py` — `FROM_ADDRESS` display name (`"QFinance <...>"` → `"Qfinera <...>"`, domain string itself deliberately left as the existing placeholder, per explicit instruction not to invent a sending domain), both email subject lines, and all 3 HTML body sentences referencing the product name. `logger = logging.getLogger("qfinance.email_service")` and internal code comments discussing historical fixes left unchanged (technical identifier / internal documentation, not user-facing).
+3. `apps/api/app/modules/portfolio/service.py` — the `read_only_notice` string returned by `get_portfolio()`.
+4. `apps/api/app/modules/portfolio/schemas.py` — the matching `PortfolioResponse.read_only_notice` default (kept in sync with #3 — two copies of the same string existed and both needed the identical change to stay consistent).
+5. `apps/web/lib/api-client.ts` — the network-error message shown to the user (`ApiError(0, "NETWORK_ERROR", ...)`). File header comment ("Centralized API client for the QFinance backend") left unchanged — internal documentation, not rendered to any user.
+6. `apps/web/app/(app)/portfolio/page.tsx` — the page's own subtitle paragraph ("Read-only view of your Zerodha holdings. QFinance cannot place trades..."). An inline code comment (`// Kite Connect's own hosted login — never a QFinance-rendered form`) left unchanged — not user-facing.
+7. `apps/api/tests/test_portfolio_integration.py` — one assertion (`test_get_portfolio_returns_holdings_and_positions_from_adapter`) checked the exact old string; updated to match #3/#4. Checked `test_email_service_pure_logic.py` for the same risk — its two tests assert only the structural `{"sent": False, "reason": ...}` shape, no string content, so no change needed there.
+
+**Spot-checked, confirmed already correct (from Part N, not re-done, verified not stale):** `apps/web/app/layout.tsx` (`metadata.title: "Qfinera"`), `apps/web/app/(app)/layout.tsx` (nav-shell logo), `apps/web/app/(auth)/{login,register}/page.tsx` (auth-page logos), `apps/web/app/(app)/community/{page.tsx,[postId]/page.tsx}` (canPost/canComment gates and copy, from Part O).
+
+**NOT swept this pass** (no content-search tool available in any tool this session has; the task gave explicit known-candidate files, which were all checked, but a handful of frontend pages were not individually re-read this pass): `/journal`, `/research`, `/research/[id]`, `/saved`, `/credits`, `/community` (partially checked in Part O; not re-verified this pass), `membership`/upgrade page (flagged as unswept since Part N, still unswept). None of these appeared in the task's own "known user-facing candidates" list, so they were not treated as this pass's responsibility, but they remain open per the "Final Search" the user will run.
+
+**No test/build/git execution performed this session** — unchanged tooling boundary. The task states real-host verification was already run and passed (89/57/9, typecheck PASS, build PASS x13 routes, `git diff --check` PASS) **before** this pass's edits; this session cannot independently confirm those results still hold after its own 7 file changes above — that requires re-running the commands listed below on the real host.
+
+### Final report, per the requested format
+
+**## REBRAND CHANGES** — the 7 items listed above: FastAPI title, email From-name + 2 subjects + 3 body sentences, portfolio `read_only_notice` (2 copies), frontend network-error message, portfolio page subtitle, 1 test assertion.
+
+**## TECHNICAL REFERENCES PRESERVED** — `QFinanceAPIError`, `qfinance_error_handler`, `qfinance.email_service`/`qfinance.auth`/`qfinance.community`/`qfinance.ratings`/`qfinance.contributions`/`qfinance.broker.zerodha` (all logger names), the `noreply@qfinance.example` placeholder domain string, `qfinance-api`/`qfinance-web` (not directly touched, assumed to be `package.json`/`pyproject.toml` names — not read this pass since neither appeared in the candidate list and packaging changes are out of scope per every prior session's constraint), repository path.
+
+**## HISTORICAL REFERENCES PRESERVED** — confirmed: none of the 5 locked `docs/*_V1.md` files were opened or modified this pass.
+
+**## TEST IMPACT** — `test_portfolio_integration.py`'s `test_get_portfolio_returns_holdings_and_positions_from_adapter` assertion updated (this test is `@pytest.mark.skip`'d — requires real Postgres — so this change has no effect on the 89-passed baseline either way, but is now correct for whenever that test does run). `test_email_service_pure_logic.py` checked, needed no change, unaffected.
+
+**## SECURITY** — confirmed: no authentication, authorization, RBAC, privacy, ownership, moderation, contribution-idempotency, or Zerodha-integration logic was touched. Every edit this pass was a literal string replacement (display text or a title parameter), verified by reading the diff of every edit above.
+
+**## REMAINING QFINANCE REFERENCES** — not enumerated via `grep` this pass (no content-search tool available in this session); the task's own Section 10 grep command must be run on the real host to get the authoritative list. Based on direct reads performed this session and in Parts L/M/N/O: expect TECHNICAL (logger names, `QFinanceAPIError`, `qfinance.example` domain, possibly `qfinance-api`/`qfinance-web` package names), HISTORICAL (all `docs/*_V1.md`, and historical `work_memory.md` entries which are deliberately not rewritten), and possibly a small number of UNEXPECTED occurrences in the unswept pages listed above (`/journal`, `/research`, `/saved`, `/credits`, membership/upgrade) — genuinely unknown until read individually or grepped.
+
+**## FINAL STATUS** — every string explicitly named as a known candidate by this task has been fixed and verified by direct read. Whether any UNEXPECTED active user-facing QFinance branding remains in the unswept pages listed above is **not yet known** — stated honestly rather than assumed clean.
+
+**Exact commands for the user to run (updated for this pass):**
+```bash
+cd /home/prd/Projects/QFinance
+grep -RniE 'QFinance|QFINANCE|qfinance' . \
+  --exclude-dir=.git --exclude-dir=.next --exclude-dir=node_modules --exclude-dir=__pycache__
+
+cd apps/api
+./.venv/bin/python -m pytest -q
+
+cd ../web
+npm run typecheck
+npm run build
+
+cd /home/prd/Projects/QFinance
+git diff --check
+git status --short
+git diff --stat
+```
+
+---
+
+## Part P — Final pass: found and fixed a second, more severe real-name leak (community + research), Q&A post_type wiring, threaded replies UI
+
+**P.1 — CONFIRMED the previously-stated profile-privacy fix is real** (`profile/service.py`/`schemas.py` no longer select/return `name` at all) — did not redo it, per instruction.
+
+**P.2 — NEW, more severe finding: the identical real-name leak was still present in TWO other places the profile fix never touched** — found by deliberately checking every serializer that builds an `author`-shaped object, not just the one named in the task:
+- `community/service.py`'s `_load_author` (used by EVERY post and comment's `author` field, across the entire Community feed/thread) — selected and returned `profiles.name`.
+- `research/service.py`'s `_load_author_and_company` (used by the PUBLIC `/research/library` and `/research/search` listings) — same leak.
+
+Both are arguably worse than the original profile bug: they exposed real names continuously, on every single piece of community/research content, not just on an explicit profile-view action. **Fixed identically to the profile pattern** — `name` no longer selected from the database in either query (not just dropped from the response), and the corresponding Pydantic `AuthorRef` schemas (`community/schemas.py`, `research/schemas.py`) had `name` removed as a field entirely, so a future careless service-layer change can't reintroduce the leak through those response models. Frontend `AuthorRef` type (`lib/types.ts`) and every UI reference to `author.name`/`c.author.name` (`community/page.tsx`, `community/[postId]/page.tsx`) updated to display `@username` instead.
+
+**P.3 — Also fixed while touching `Post`'s type: `lib/types.ts`'s `Post.post_type` TypeScript union was wrong** — declared `"discussion" | "thesis" | "announcement"`, but the real backend `POST_TYPES` CHECK constraint is `("general", "thesis", "question", "discussion")` (`community/models.py`). `"announcement"` is not a valid value at all; `"general"`/`"question"` were missing. Corrected to match exactly.
+
+**P.4 — Q&A: confirmed `post_type='question'` was already fully supported end-to-end in the backend** (CHECK constraint, `PostCreateRequest.post_type`, `create_channel_post`'s passthrough) — the gap was entirely frontend. Added: a Discussion/Question toggle in the `/community` composer (sets `post_type` on create), and a Question/Thesis badge on feed cards. No backend change needed or made for Q&A itself.
+
+**P.5 — Threaded replies: confirmed `POST /community/comments/{comment_id}/replies` was already fully implemented and correctly wired** (`community/router.py`/`service.py`, `parent_comment_id` support) from an earlier pass — the frontend never called it. Rewrote `/community/[postId]/page.tsx`: builds a real comment tree client-side from the flat `parent_comment_id`-bearing list (matching API Spec V2 §3's own suggested approach), renders indented nested replies at arbitrary depth, and adds a working per-comment "Reply" action calling the real endpoint.
+
+**P.6 — Thesis Card: NOT implemented — genuine, correctly-identified blocking gap.** There is still no `GET /community/posts/{id}` single-post-fetch endpoint anywhere in the backend — only list-by-channel and list-comments exist. Without it, the post detail page cannot fetch a thesis post's own `content`/`post_type`/author/rating to build a card around. **Not implemented**, not faked with a broken partial version.
+
+**P.7 — Security audit performed, beyond the two fixes above:** `portfolio/schemas.py` re-read: confirmed no `access_token` field exists anywhere in that module's Pydantic surface. `moderation`'s `_load_reporter` (staff-only queue view) and `billing`/`membership` serializers **not re-audited this pass for the same real-name pattern** — genuine remaining gap, flagged, not silently assumed clean.
+
+**P.8 — Tests: no regression test added this pass for the P.2 fix.** `test_profile_privacy.py` (pre-existing) covers only the profile endpoint, not community/research's `_load_author`/`_load_author_and_company`. Genuine gap.
+
+**P.9 — Rebrand audit: not performed this pass** (no text-search tool available for a reliable sweep).
+
+**P.10 — No new migration this pass** — the `name` removal is a query/response-layer change only; `profiles.name` column itself is untouched (still needed elsewhere).
+
+---
+
+## Part Q — Real host execution results received; one test bug found and fixed in response
+
+**Q.1 — First genuine real-host pytest run reported in this session for the accumulated P0-era work:** `89 passed, 57 skipped, 1 failed`. Frontend `npm run typecheck` and `npm run build` both **actually passed** on the real host (13 routes compiled, clean production build). `git diff --check` produced no output (clean, no whitespace errors).
+
+**Q.2 — The single failure was in `test_mvp_is_free_no_member_gates.py` (written this session, not previously run) — confirmed to be a bug in the TEST's route-discovery method, not in the actual `export.csv` fix it was meant to verify.** Root cause: the test filtered `app.main.app.routes` with `hasattr(r, "path")`, assuming `include_router()`-registered routes are eagerly flattened into plain objects with a `.path` attribute. On this project's actual installed FastAPI/Starlette version they are not — they remain wrapped (observed directly, as `_IncludedRouter`, much earlier in this same session's own sandbox exploration of `app.routes` vs. `app.openapi()['paths']` — a fact I had already encountered once before and should have applied here the first time). The filter silently skipped every route under `/api/v1/*`, so the assertion "route not found" fired for a route that genuinely exists and works.
+
+**Fixed by rewriting the test** to import each module's `router` object directly (`community.router.router`, `research.router.router`) and search each router's OWN `.routes` list by its un-prefixed relative path, rather than trying to resolve the fully-prefixed path against the top-level app. This sidesteps the wrapping behavior entirely. **Not re-executed by me** (no execution access) — the corrected version is written and reasoned through, but only the user running it can confirm it now passes.
+
+**Q.3 — Important distinction preserved:** the actual product fix (`research/router.py`'s `/export.csv` changed from `require_role("MEMBER")` to `require_verified_profile`, per the explicit "MVP is 100% free" rule) was never in question — 89/90 other tests passed, and this failure was isolated entirely to the brand-new test's own introspection logic.
+
+**Exact command for the user to run to close this out:**
+```bash
+cd /home/prd/Projects/QFinance/apps/api
+./.venv/bin/python -m pytest -q tests/test_mvp_is_free_no_member_gates.py -v
+./.venv/bin/python -m pytest -q   # full suite once more, to confirm 90/90
+```
+

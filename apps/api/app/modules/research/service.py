@@ -84,17 +84,24 @@ async def _load_author_and_company(db: AsyncSession, *, author_id: uuid.UUID, co
     ORM models directly, matching the same cross-module-avoidance pattern
     already used in companies/service.py's `get_content_counts` (Architecture
     §4.4 — modules communicate via service interfaces/queries, not direct
-    cross-imports of another module's ORM models)."""
+    cross-imports of another module's ORM models).
+
+    SECURITY FIX (this pass): previously also selected/returned `profiles.name`
+    (the real registration name) for `author` — the same real-identity leak
+    already found and fixed in profile/service.py and community/service.py's
+    `_load_author`, just not yet applied here. `/research/library` and
+    `/research/search` are public-facing surfaces; `username` is the only
+    public identity attached to a research item's author now."""
     author_row = (await db.execute(
-        text("SELECT user_id, name, username FROM profiles WHERE user_id = :uid"),
+        text("SELECT user_id, username FROM profiles WHERE user_id = :uid"),
         {"uid": str(author_id)},
     )).first()
     company_row = (await db.execute(
         text("SELECT id, name FROM companies WHERE id = :cid"),
         {"cid": str(company_id)},
     )).first()
-    author = ({"id": str(author_row.user_id), "name": author_row.name, "username": author_row.username}
-              if author_row else {"id": str(author_id), "name": None, "username": None})
+    author = ({"id": str(author_row.user_id), "username": author_row.username}
+              if author_row else {"id": str(author_id), "username": None})
     company = ({"id": str(company_row.id), "name": company_row.name}
                if company_row else {"id": str(company_id), "name": None})
     return author, company
