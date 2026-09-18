@@ -263,7 +263,21 @@ async def apply_moderator_edit_to_comment(db: AsyncSession, *, comment_id: uuid.
 
 
 async def patch_post(db: AsyncSession, *, post_id: uuid.UUID, actor_id: uuid.UUID, content: str) -> Post:
-    """§4.1.3 COMM-008."""
+    """§4.1.3 COMM-008.
+
+    BUG FIX (this pass, real runtime 500 confirmed during manual testing):
+    `posts.updated_at` has `onupdate=func.now()` — a server-computed value.
+    SQLAlchemy deliberately expires that ONE attribute on the instance after
+    any UPDATE that changes it (regardless of the session's `expire_on_commit`
+    setting, which is already `False` in core/db.py and is NOT the bug), since
+    the value in memory is now known-stale. The caller (community/router.py's
+    `patch_post`) then calls `serialize_post(db, post)`, which reads
+    `post.updated_at` — triggering an implicit lazy-refresh that crashes with
+    `MissingGreenlet` under AsyncSession, because that refresh isn't wrapped
+    in an explicit `await`. Fixed with one explicit `await db.refresh(post)`
+    right after commit, so the attribute is genuinely re-fetched (correctly,
+    inside an awaited call) before this function returns — not hidden, not
+    worked around with a broad except."""
     post = await get_post_or_404(db, post_id)
     _require_author(post, actor_id)
     if not content or not content.strip():
@@ -271,6 +285,7 @@ async def patch_post(db: AsyncSession, *, post_id: uuid.UUID, actor_id: uuid.UUI
     post.content = content
     post.is_edited = True
     await db.commit()
+    await db.refresh(post)
     return post
 
 
@@ -474,6 +489,13 @@ async def get_comment_or_404(db: AsyncSession, comment_id: uuid.UUID) -> Comment
 
 
 async def patch_comment(db: AsyncSession, *, comment_id: uuid.UUID, actor_id: uuid.UUID, content: str) -> Comment:
+    """Same fix and reasoning as patch_post above — `comments.updated_at` has
+    the identical `onupdate=func.now()` server-side-expiry pitfall, and
+    router.py's `patch_comment` endpoint calls `serialize_comment(db, comment)`
+    immediately after this returns, which would hit the same MissingGreenlet
+    crash without this fix. Not independently reported yet (only patch_post
+    was hit during manual testing), but it is the identical latent bug —
+    fixed here proactively rather than left for the next crash report."""
     comment = await get_comment_or_404(db, comment_id)
     _require_author(comment, actor_id)
     if not content or not content.strip():
@@ -481,6 +503,7 @@ async def patch_comment(db: AsyncSession, *, comment_id: uuid.UUID, actor_id: uu
     comment.content = content
     comment.is_edited = True
     await db.commit()
+    await db.refresh(comment)
     return comment
 
 
