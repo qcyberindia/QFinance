@@ -1,195 +1,240 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { api, ApiError } from "@/lib/api-client";
 import { useSession } from "@/lib/session";
-import { COMMUNITY_CHANNELS, type Post, type PostListResponse } from "@/lib/types";
-import { Card, EmptyState, ErrorState, LoadingState } from "@/components/states";
+import type { Post, PostListResponse } from "@/lib/types";
+import { EmptyState, ErrorState, FeedSkeleton } from "@/components/states";
 import { MemberCharterModal } from "@/components/member-charter-modal";
+import { Composer } from "@/components/composer";
+import { PostCard } from "@/components/post-card";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+
+// "All" merges these existing channels client-side — no new backend API.
+// (announcements/learning/off_topic excluded: low post volume, and
+// announcements is staff-only to post in, so it rarely carries the kind of
+// content the tab filters below are meant to surface.)
+const FEED_CHANNELS = ["general_discussion", "research_discussion", "market_discussion", "help_questions"];
+
+type FilterTab = "all" | "discussions" | "questions" | "theses";
+
+const TABS: { value: FilterTab; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "discussions", label: "Discussions" },
+  { value: "questions", label: "Questions" },
+  { value: "theses", label: "Theses" },
+];
+
+function matchesTab(post: Post, tab: FilterTab): boolean {
+  if (tab === "all") return true;
+  if (tab === "discussions") return post.post_type === "general" || post.post_type === "discussion";
+  if (tab === "questions") return post.post_type === "question";
+  if (tab === "theses") return post.post_type === "thesis";
+  return true;
+}
 
 export default function CommunityPage() {
   const { session } = useSession();
-  // Basic/Pro product decision (backend: core/deps.py's require_verified_profile,
-  // applied to POST /community/channels/{channel}/posts and every other
-  // community-participation endpoint) — any Authenticated + Verified user may
-  // post, not just Pro/Core members. The frontend can't see verification status
-  // from `/auth/session` today (SessionResponse has no such field), so this
-  // gate is simply "is there a session at all" — Basic includes everyone once
-  // logged in. If a genuinely unverified user attempts to post, the backend's
-  // real 403 ("Please verify your email address to continue.") surfaces
-  // through the existing catch block below via ApiError.message, same as any
-  // other API error — not pre-guessed or duplicated here.
   const canPost = session !== null;
 
-  const [channel, setChannel] = useState<string>("general_discussion");
-  const [posts, setPosts] = useState<Post[] | null>(null);
+  const [allPosts, setAllPosts] = useState<Post[] | null>(null);
+  const [tab, setTab] = useState<FilterTab>("all");
   const [error, setError] = useState<string | null>(null);
-  const [content, setContent] = useState("");
-  const [postType, setPostType] = useState<"general" | "question">("general");
-  const [posting, setPosting] = useState(false);
   const [showCharterModal, setShowCharterModal] = useState(false);
+  const [pendingSubmit, setPendingSubmit] = useState<{ content: string; postType: Post["post_type"] } | null>(null);
+  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
+  const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set());
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
-  const load = useCallback(async (c: string) => {
+  const load = useCallback(async () => {
     setError(null);
-    setPosts(null);
+    setAllPosts(null);
     try {
-      const data = await api.get<PostListResponse>(`/community/channels/${c}/posts`);
-      setPosts(data.items);
+      const results = await Promise.all(
+        FEED_CHANNELS.map((c) =>
+          api.get<PostListResponse>(`/community/channels/${c}/posts`).catch(() => ({ page: 1, page_size: 0, total: 0, items: [] } as PostListResponse))
+        )
+      );
+      const merged = results.flatMap((r) => r.items);
+      merged.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      setAllPosts(merged);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not load the feed.");
     }
   }, []);
 
   useEffect(() => {
-    load(channel);
-  }, [channel, load]);
+    load();
+  }, [load]);
 
-  async function submitPost() {
-    setPosting(true);
+  async function doSubmitPost(content: string, postType: Post["post_type"]) {
     try {
-      await api.post(`/community/channels/${channel}/posts`, { content, post_type: postType });
-      setContent("");
-      await load(channel);
+      await api.post(`/community/channels/general_discussion/posts`, { content, post_type: postType });
+      await load();
     } catch (err) {
       if (err instanceof ApiError && err.code === "CHARTER_NOT_ACKNOWLEDGED") {
-        // Legitimate backend gate (users/service.py's has_acknowledged_current_charter) —
-        // not bypassed. Prompt the real acknowledgment flow instead of erroring out.
+        setPendingSubmit({ content, postType });
         setShowCharterModal(true);
       } else {
         setError(err instanceof ApiError ? err.message : "Could not publish your post.");
+        throw err;
       }
-    } finally {
-      setPosting(false);
     }
   }
 
-  async function handlePost(e: React.FormEvent) {
-    e.preventDefault();
-    if (!content.trim() || !canPost) return;
-    setError(null);
-    await submitPost();
+  async function toggleLike(post: Post) {
+    const isLiked = likedIds.has(post.id);
+    setLikedIds((prev) => {
+      const next = new Set(prev);
+      isLiked ? next.delete(post.id) : next.add(post.id);
+      return next;
+    });
+    try {
+      if (isLiked) {
+        await api.delete(`/community/post/${post.id}/reactions`);
+      } else {
+        await api.post(`/community/post/${post.id}/reactions`, { reaction_type: "like" });
+      }
+    } catch {
+      // Revert optimistic update on failure.
+      setLikedIds((prev) => {
+        const next = new Set(prev);
+        isLiked ? next.add(post.id) : next.delete(post.id);
+        return next;
+      });
+    }
   }
 
+  async function toggleBookmark(post: Post) {
+    const isSaved = bookmarkedIds.has(post.id);
+    setBookmarkedIds((prev) => {
+      const next = new Set(prev);
+      isSaved ? next.delete(post.id) : next.add(post.id);
+      return next;
+    });
+    try {
+      if (isSaved) {
+        await api.delete(`/community/bookmarks/${post.id}`);
+      } else {
+        await api.post(`/community/bookmarks`, { post_id: post.id });
+      }
+    } catch {
+      setBookmarkedIds((prev) => {
+        const next = new Set(prev);
+        isSaved ? next.add(post.id) : next.delete(post.id);
+        return next;
+      });
+    }
+  }
+
+  async function handleEdit(post: Post, newContent: string) {
+    await api.patch(`/community/posts/${post.id}`, { content: newContent });
+    await load();
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    const id = deleteTarget;
+    setDeleteTarget(null);
+    try {
+      await api.delete(`/community/posts/${id}`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not delete this post.");
+    }
+  }
+
+  async function handleReport(post: Post) {
+    try {
+      // Real endpoint: POST /moderation/reports (§5.1) — surfaced honestly;
+      // if the backend rejects it (e.g. role requirement), the real error
+      // message is shown, not a fake success.
+      await api.post("/moderation/reports", { target_type: "post", target_id: post.id, reason: "Reported from Community feed" });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not submit your report.");
+    }
+  }
+
+  const posts = allPosts?.filter((p) => matchesTab(p, tab)) ?? null;
+
   return (
-    <div className="space-y-5">
+    <div className="max-w-2xl mx-auto">
+      {deleteTarget && (
+        <ConfirmDialog
+          message="Delete this discussion?"
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={confirmDelete}
+        />
+      )}
       {showCharterModal && (
         <MemberCharterModal
-          onCancel={() => setShowCharterModal(false)}
+          onCancel={() => { setShowCharterModal(false); setPendingSubmit(null); }}
           onAcknowledged={async () => {
             setShowCharterModal(false);
-            await submitPost(); // retry the original post now that the charter is acknowledged
+            if (pendingSubmit) {
+              await doSubmitPost(pendingSubmit.content, pendingSubmit.postType).catch(() => {});
+              setPendingSubmit(null);
+            }
           }}
         />
       )}
-      <div>
+
+      <div className="mb-1">
         <h1 className="font-display text-2xl">Community</h1>
-        <p className="text-sm text-ink-soft">Discuss ideas, share reasoning, learn from other members.</p>
       </div>
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {COMMUNITY_CHANNELS.map((c) => (
+      {canPost && (
+        <div className="border-b" style={{ borderColor: "var(--line)" }}>
+          <Composer username={session?.username ?? null} onSubmit={doSubmitPost} />
+        </div>
+      )}
+
+      <div
+        role="tablist"
+        aria-label="Filter posts"
+        className="flex gap-1 py-3 overflow-x-auto"
+        style={{ WebkitOverflowScrolling: "touch" }}
+      >
+        {TABS.map((t) => (
           <button
-            key={c}
-            onClick={() => setChannel(c)}
-            className="text-xs font-semibold px-3 py-1.5 rounded-full whitespace-nowrap"
+            key={t.value}
+            role="tab"
+            aria-selected={tab === t.value}
+            onClick={() => setTab(t.value)}
+            className="text-sm px-3 py-1.5 rounded-full whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
             style={{
-              border: "1px solid var(--line)",
-              background: channel === c ? "var(--brass)" : "transparent",
-              color: channel === c ? "var(--cream-0)" : "var(--ink-soft)",
+              fontWeight: tab === t.value ? 600 : 400,
+              color: tab === t.value ? "var(--ink)" : "var(--ink-soft)",
+              background: tab === t.value ? "var(--cream-1)" : "transparent",
+              outlineColor: "var(--brass)",
             }}
           >
-            {c.replace("_", " ")}
+            {t.label}
           </button>
         ))}
       </div>
 
-      <Card>
-        {canPost ? (
-          <form onSubmit={handlePost} className="space-y-3">
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setPostType("general")}
-                className="text-xs font-semibold px-3 py-1 rounded-full"
-                style={{
-                  border: "1px solid var(--line)",
-                  background: postType === "general" ? "var(--ink)" : "transparent",
-                  color: postType === "general" ? "var(--cream-0)" : "var(--ink-soft)",
-                }}
-              >
-                Discussion
-              </button>
-              <button
-                type="button"
-                onClick={() => setPostType("question")}
-                className="text-xs font-semibold px-3 py-1 rounded-full"
-                style={{
-                  border: "1px solid var(--line)",
-                  background: postType === "question" ? "var(--ink)" : "transparent",
-                  color: postType === "question" ? "var(--cream-0)" : "var(--ink-soft)",
-                }}
-              >
-                Question
-              </button>
-            </div>
-            <textarea
-              className="qf-input min-h-[80px]"
-              placeholder={postType === "question" ? "What do you want to ask the community?" : "Share something with the community…"}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-            />
-            <button type="submit" disabled={posting || !content.trim()} className="qf-btn-primary">
-              {posting ? "Posting…" : postType === "question" ? "Ask" : "Post"}
-            </button>
-          </form>
-        ) : (
-          <div className="text-sm text-ink-soft">
-            <p>Sign in to post, comment, and join the conversation.</p>
-          </div>
-        )}
-      </Card>
-
-      {error && <ErrorState message={error} onRetry={() => load(channel)} />}
-      {!error && posts === null && <LoadingState label="Loading feed…" />}
+      {error && <ErrorState message={error} onRetry={load} />}
+      {!error && posts === null && <FeedSkeleton />}
       {!error && posts !== null && posts.length === 0 && (
-        <EmptyState title="Nothing here yet" body="Be the first to post in this channel." />
+        <EmptyState title="Nothing here yet" body="Be the first to start a thread." />
       )}
       {!error && posts !== null && posts.length > 0 && (
-        <div className="space-y-3">
+        <div>
           {posts.map((post) => (
-            <Card key={post.id}>
-              <Link href={`/community/${post.id}`} className="block">
-                <div className="text-xs text-ink-soft mb-1 flex items-center gap-2">
-                  {post.post_type === "question" && (
-                    <span
-                      className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded"
-                      style={{ background: "var(--brass)", color: "var(--cream-0)" }}
-                    >
-                      Question
-                    </span>
-                  )}
-                  {post.post_type === "thesis" && (
-                    <span
-                      className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded"
-                      style={{ background: "var(--ink)", color: "var(--cream-0)" }}
-                    >
-                      Thesis
-                    </span>
-                  )}
-                  <span className="font-semibold" style={{ color: "var(--ink)" }}>
-                    {post.author.username ? `@${post.author.username}` : "Member"}
-                  </span>
-                  <span>· {new Date(post.created_at).toLocaleDateString()}</span>
-                  {post.is_edited && <span>· edited</span>}
-                </div>
-                <p className="text-sm whitespace-pre-wrap">{post.content}</p>
-                <div className="text-xs text-ink-soft mt-3 flex gap-4">
-                  <span>{post.reaction_count} likes</span>
-                  <span>{post.comment_count} comments</span>
-                </div>
-              </Link>
-            </Card>
+            <PostCard
+              key={post.id}
+              post={post}
+              href={`/community/${post.id}`}
+              isOwn={session?.user_id === post.author.id}
+              liked={likedIds.has(post.id)}
+              onToggleLike={() => toggleLike(post)}
+              bookmarked={bookmarkedIds.has(post.id)}
+              onToggleBookmark={() => toggleBookmark(post)}
+              onEdit={(content) => handleEdit(post, content)}
+              onDelete={() => setDeleteTarget(post.id)}
+              onReport={() => handleReport(post)}
+            />
           ))}
         </div>
       )}
