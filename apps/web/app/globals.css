@@ -7,16 +7,45 @@
 :root {
   --cream-0: #fbf8f1;
   --cream-1: #f3edde;
+  --cream-2: #e9dfc6;
   --line: #d8cba9;
   --brass: #a8863e;
+  --brass-dark: #7c6329;
   --ink: #2b2621;
   --ink-soft: #5b5347;
+  --up: #4b6c4a;
+  --down: #9c4b3f;
+  --focus-ring: rgba(168, 134, 62, 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Qfinera has one theme (cream/brass) by design (Design Docs §1/§18) — this
+     is not a second visual language, just enough contrast remapping so the
+     existing cream-on-ink hierarchy stays legible on a dark system/browser
+     background instead of inverting oddly. Same tokens, same relationships. */
+  :root {
+    --cream-0: #1c1914;
+    --cream-1: #262019;
+    --cream-2: #332b1f;
+    --line: #4a4030;
+    --ink: #f3edde;
+    --ink-soft: #c9bfa8;
+  }
 }
 
 html, body {
   background: var(--cream-0);
   color: var(--ink);
   font-family: 'Inter', sans-serif;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
 }
 
 .font-display { font-family: 'Fraunces', serif; }
@@ -29,41 +58,109 @@ html, body {
   box-shadow: 0 1px 0 rgba(43,38,33,.06), 0 8px 24px rgba(43,38,33,.06);
 }
 
+.qf-btn-primary,
+.qf-btn-gold,
+.qf-btn-ghost {
+  font-weight: 600;
+  border-radius: 2px;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease, transform 80ms ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
 .qf-btn-primary {
   background: var(--ink);
   color: var(--cream-0);
-  font-weight: 600;
   padding: 10px 20px;
-  border-radius: 2px;
-  font-size: 13.5px;
+  border: 1px solid var(--ink);
 }
+.qf-btn-primary:hover:not(:disabled) { background: var(--brass-dark); border-color: var(--brass-dark); }
+.qf-btn-primary:active:not(:disabled) { transform: translateY(1px); }
 
 .qf-btn-gold {
   background: var(--brass);
   color: var(--cream-0);
-  font-weight: 600;
   padding: 10px 20px;
-  border-radius: 2px;
-  font-size: 13.5px;
+  border: 1px solid var(--brass);
 }
+.qf-btn-gold:hover:not(:disabled) { background: var(--brass-dark); border-color: var(--brass-dark); }
+.qf-btn-gold:active:not(:disabled) { transform: translateY(1px); }
 
 .qf-btn-ghost {
   background: transparent;
   border: 1px solid var(--ink);
   color: var(--ink);
-  font-weight: 600;
   padding: 9px 19px;
-  border-radius: 2px;
-  font-size: 13.5px;
+}
+.qf-btn-ghost:hover:not(:disabled) { background: var(--cream-1); }
+.qf-btn-ghost:active:not(:disabled) { transform: translateY(1px); }
+
+.qf-btn-primary:disabled,
+.qf-btn-gold:disabled,
+.qf-btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .qf-input {
   border: 1px solid var(--line);
   background: var(--cream-0);
+  color: var(--ink);
   border-radius: 2px;
   padding: 10px 13px;
   font-size: 13.5px;
   width: 100%;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+.qf-input:hover:not(:disabled) { border-color: var(--brass); }
+.qf-input:focus {
+  outline: none;
+  border-color: var(--brass);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.qf-input:disabled {
+  background: var(--cream-1);
+  color: var(--ink-soft);
+  cursor: not-allowed;
+}
+textarea.qf-input { resize: vertical; line-height: 1.55; }
+
+/* Any plain clickable row/card that isn't already a .qf-btn-* — gives every
+   interactive card (research list items, explore items, nav rows) a
+   consistent, visible hover/active affordance instead of relying on the
+   cursor alone. */
+.qf-clickable {
+  transition: border-color 120ms ease, background-color 120ms ease, transform 80ms ease;
+  cursor: pointer;
+}
+.qf-clickable:hover { border-color: var(--brass); }
+.qf-clickable:active { transform: translateY(1px); }
+
+.qf-nav-item {
+  transition: background-color 120ms ease, color 120ms ease;
+  border-radius: 3px;
+}
+.qf-nav-item:hover { background: var(--cream-1); }
+.qf-nav-item:focus-visible { outline-offset: -2px; }
+
+/* Small pill used to visually flag content that is assembled/derived rather
+   than directly authored (Research Workspace sections 11/13). */
+.qf-derived-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  background: var(--cream-1);
 }
 
 .qf-label {

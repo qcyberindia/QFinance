@@ -120,7 +120,18 @@ async def _isolated_test_redis():
 @pytest_asyncio.fixture
 async def client(db_session):
     transport = ASGITransport(app=main_module.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    # base_url is "https://test" (not "http://test") deliberately: auth/router.py
+    # login sets both the session and CSRF cookies with secure=True (correct,
+    # unmodified production behavior — not changed here). httpx's cookie jar
+    # stores a Secure-flagged cookie regardless of scheme, but will NOT
+    # re-attach it to a later request whose URL scheme is http — so under
+    # "http://test" the Cookie header silently drops both qf_session and
+    # csrf_token on every request after login, producing CSRF_MISMATCH (and
+    # would produce 401s too, if CSRF didn't already reject first). "https://"
+    # here does not perform any real TLS — ASGITransport is an in-process,
+    # in-memory dispatch — it only satisfies httpx's own secure-cookie
+    # attachment check. No application/security code changed for this fix.
+    async with AsyncClient(transport=transport, base_url="https://test") as ac:
         yield ac
 
 

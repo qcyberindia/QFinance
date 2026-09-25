@@ -6,10 +6,15 @@ export function ConfirmDialog({
   message,
   onCancel,
   onConfirm,
+  confirmLabel = "Delete",
 }: {
   message: string;
   onCancel: () => void;
   onConfirm: () => void;
+  /** Defaults to "Delete" to preserve every existing caller's behavior
+   * exactly — pass an explicit label (e.g. "Disconnect") for actions that
+   * aren't literally a delete. */
+  confirmLabel?: string;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -38,7 +43,7 @@ export function ConfirmDialog({
             Cancel
           </button>
           <button className="qf-btn-primary text-sm" style={{ background: "#9C4B3F" }} onClick={onConfirm}>
-            Delete
+            {confirmLabel}
           </button>
         </div>
       </div>

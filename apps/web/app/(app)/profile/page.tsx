@@ -5,6 +5,7 @@ import { useSession } from "@/lib/session";
 import { api, ApiError } from "@/lib/api-client";
 import type { PublicProfile } from "@/lib/types";
 import { Card, ErrorState, LoadingState } from "@/components/states";
+import { AiConnectionSettings } from "@/components/ai-connection-settings";
 
 export default function ProfilePage() {
   const { session } = useSession();
@@ -60,6 +61,11 @@ export default function ProfilePage() {
               <div className="font-display text-2xl">{profile.contribution_points}</div>
               <div className="text-xs text-ink-soft uppercase tracking-wide mt-1">Q-Points</div>
             </Card>
+          </div>
+
+          <div>
+            <h2 className="font-display text-lg mb-3">Settings</h2>
+            <AiConnectionSettings />
           </div>
 
           <div>

@@ -87,7 +87,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
 
       <main className="flex-1 min-w-0">
-        <div className="max-w-3xl mx-auto px-4 py-6">{children}</div>
+        {/* The Research Workspace (/research/[id]) uses a three-column
+            desktop layout (section nav / document / assistant) that needs
+            more room than every other page in the app — widened only for
+            that one route, everything else keeps the original max-w-3xl. */}
+        <div
+          className={`mx-auto px-4 py-6 ${
+            pathname && /^\/research\/(?!explore(?:\/|$))[^/]+/.test(pathname) ? "max-w-6xl" : "max-w-3xl"
+          }`}
+        >
+          {children}
+        </div>
 
         {/* Mobile bottom nav */}
         <nav

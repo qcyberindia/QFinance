@@ -35,6 +35,8 @@ class ResearchPatchRequest(BaseModel):
     risk_register: str | None = None
     catalysts: str | None = None
     invalidation_conditions: str | None = None
+    management_notes: str | None = None
+    assumptions_outlook: str | None = None
     research_date: date | None = None
     conflict_disclosed: bool | None = None
     conflict_detail: str | None = None
@@ -96,6 +98,8 @@ class ResearchFullResponse(BaseModel):
     risk_register: str | None
     catalysts: str | None
     invalidation_conditions: str | None
+    management_notes: str | None
+    assumptions_outlook: str | None
     disclosure: DisclosureBlock
     sources: list[SourceResponse]
     tags: list[str]

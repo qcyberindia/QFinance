@@ -21,6 +21,15 @@ QRES_STAGE_FIELDS = (
     "catalysts", "invalidation_conditions",
 )
 
+# Workspace sections 06 (Management) and 07 (Assumptions & Outlook) — added
+# via alembic/versions/0007_research_management_and_assumptions.py.
+# Deliberately kept SEPARATE from QRES_STAGE_FIELDS (that tuple mirrors the
+# original locked Q-RESEARCH 9-stage set exactly, migration 0001/0002) rather
+# than folded into it, so the locked set stays traceable to its original
+# source. Both are free-text, user-authored, additive-only columns — no
+# scoring, no AI generation, matching every other workspace field.
+EXTENDED_SECTION_FIELDS = ("management_notes", "assumptions_outlook")
+
 PLACEHOLDER_TITLE = "Untitled research"
 PLACEHOLDER_SUMMARY = ""
 
@@ -59,6 +68,8 @@ class Research(Base):
     risk_register: Mapped[str | None] = mapped_column(Text, nullable=True)
     catalysts: Mapped[str | None] = mapped_column(Text, nullable=True)
     invalidation_conditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    management_notes: Mapped[str | None] = mapped_column(Text, nullable=True)  # Section 06 — 0007
+    assumptions_outlook: Mapped[str | None] = mapped_column(Text, nullable=True)  # Section 07 — 0007
 
     # SRC-003/004 — explicit tri-state: NULL = unanswered, True/False = answered.
     conflict_disclosed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

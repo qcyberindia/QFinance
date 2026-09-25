@@ -24,18 +24,34 @@ none yet in practice — this table has not been written to by any code path
 that reached a real database in this session — but the backfill is included
 for correctness regardless of that).
 
+MIGRATION-GRAPH FIX (this pass): this file previously declared
+`revision = "0006"`, identical to 0006_ai_research_assistant.py's own
+`revision = "0006"`. That is not "two heads" (which `alembic merge` would
+resolve) — it is a duplicate revision ID, which Alembic cannot even load
+into a graph; there is no valid `alembic merge` for this case. The only
+correct fix is to give one of the two files a unique ID. Renumbering this
+one (not 0006_ai_research_assistant.py) and re-chaining it AFTER that file
+(rather than a true merge, which would be pointless extra complexity here —
+the two migrations touch entirely disjoint tables, `contributions` vs.
+`ai_connections`/`research_notes`, so there is no real conflict to merge,
+only a linear ordering to pick) is safe specifically because: (1) this
+migration has never been applied to any real database (see note above —
+no write path has reached a live host in this session), and (2) the
+SQL/behavior below is byte-for-byte unchanged; only the revision-graph
+metadata (this file's `revision` and `down_revision`) was edited.
+
 WRITTEN, NOT EXECUTED.
 
-Revision ID: 0006
-Revises: 0005
+Revision ID: 0006_contrib
+Revises: 0006 (0006_ai_research_assistant)
 Create Date: 2026-09-13
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "0006"
-down_revision = "0005"
+revision = "0006_contrib"
+down_revision = "0006"
 branch_labels = None
 depends_on = None
 

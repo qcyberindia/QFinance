@@ -2,14 +2,17 @@
 Top-level /api/v1 router aggregation (API-001).
 `auth`, `companies`, `research`, `membership`, `billing`, `users` (acknowledgment
 endpoints only), `community`, `moderation`, `journal`, `portfolio`, `ratings`,
-`contributions` (as `/credits`), `profile` (V2 P0/P1) are wired in this pass.
-`watchlist`, `notifications`, `admin` (V1) remain unimplemented from before
-this restructure. Do not infer module existence from this file alone; see
-work_memory.md for the real status.
+`contributions` (as `/credits`), `profile` (V2 P0/P1), `ai` (BYOK
+connect/status/disconnect only — newly wired in the AI-key-encryption
+security-fix pass; this module previously had no router at all) are wired
+in this pass. `watchlist`, `notifications`, `admin` (V1) remain
+unimplemented from before this restructure. Do not infer module existence
+from this file alone; see work_memory.md for the real status.
 WRITTEN, NOT EXECUTED.
 """
 from fastapi import APIRouter
 
+from app.modules.ai.router import router as ai_router
 from app.modules.auth.router import router as auth_router
 from app.modules.billing.router import router as billing_router
 from app.modules.community.router import research_discussion_router
@@ -40,6 +43,7 @@ api_router.include_router(journal_router)
 api_router.include_router(portfolio_router)
 api_router.include_router(credits_router)
 api_router.include_router(profile_router)
+api_router.include_router(ai_router)
 
 # NOT YET WIRED (modules not yet implemented in code — confirmed absent, not
 # just unwired, by directory listing under app/modules/):

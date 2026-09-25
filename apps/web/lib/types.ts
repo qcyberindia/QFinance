@@ -99,6 +99,8 @@ export interface ResearchFull {
   risk_register: string | null;
   catalysts: string | null;
   invalidation_conditions: string | null;
+  management_notes: string | null;
+  assumptions_outlook: string | null;
   disclosure: {
     conflict_disclosed: boolean | null;
     conflict_detail: string | null;
@@ -139,6 +141,41 @@ export interface ConnectionStatusResponse {
 // ---- Companies (for association pickers) ----
 export interface Company { id: string; name: string; exchange: string }
 export interface CompanyListResponse { items: Company[]; total: number; page: number; page_size: number }
+
+// ---- Research Library (API Spec §7.4.1/§7.4.2) ----
+// Mirrors research/schemas.py's LibraryItem | ResearchPreviewResponse union
+// exactly (see that file) — no fields invented here.
+export interface LibraryItem {
+  id: string;
+  title: string;
+  summary: string;
+  author: AuthorRef;
+  company: { id: string; name: string | null };
+  industry: string | null;
+  created_at: string;
+  updated_at: string;
+  status_label: string;
+  moderation_status: string;
+  tags: string[];
+  source_count: number;
+  current_version: number;
+  access_tier: string;
+  preview: false;
+}
+export interface LibraryPreviewItem {
+  preview: true;
+  id: string;
+  title: string;
+  author: AuthorRef;
+  summary: string;
+  access_tier: string;
+}
+export interface LibraryListResponse {
+  items: (LibraryItem | LibraryPreviewItem)[];
+  page: number;
+  page_size: number;
+  total: number;
+}
 
 // ---- My Research (API Spec V2 §2) ----
 export interface MyResearchItem {

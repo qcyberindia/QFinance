@@ -27,12 +27,13 @@ from app.core.audit import write_audit_log
 from app.core.errors import Forbidden, NotFound, QFinanceAPIError
 from app.modules.analytics.models import emit_event
 from app.modules.research.models import (
-    PLACEHOLDER_SUMMARY, PLACEHOLDER_TITLE, QRES_STAGE_FIELDS, Research, ResearchSource, ResearchTag, ResearchVersion,
+    EXTENDED_SECTION_FIELDS, PLACEHOLDER_SUMMARY, PLACEHOLDER_TITLE, QRES_STAGE_FIELDS, Research, ResearchSource,
+    ResearchTag, ResearchVersion,
 )
 from app.modules.research.validation import PublishCandidate, validate_publish_readiness
 
 _PATCHABLE_CONTENT_FIELDS = (
-    "title", "summary", *QRES_STAGE_FIELDS, "research_date",
+    "title", "summary", *QRES_STAGE_FIELDS, *EXTENDED_SECTION_FIELDS, "research_date",
     "conflict_disclosed", "conflict_detail", "position_disclosed", "position_detail",
 )
 
@@ -134,6 +135,7 @@ def serialize_for_viewer(research: Research, *, sources: list[ResearchSource], t
             "access_tier": research.access_tier, "title": research.title, "summary": research.summary,
             "current_version": research.current_version,
             **{f: getattr(research, f) for f in QRES_STAGE_FIELDS},
+            **{f: getattr(research, f) for f in EXTENDED_SECTION_FIELDS},
             "disclosure": {
                 "conflict_disclosed": research.conflict_disclosed, "conflict_detail": research.conflict_detail,
                 "position_disclosed": research.position_disclosed, "position_detail": research.position_detail,
@@ -204,6 +206,7 @@ async def patch_draft(db: AsyncSession, *, research_id: uuid.UUID, actor_id: uui
 
 def _snapshot(research: Research, sources: list[ResearchSource], tags: list[str]) -> dict:
     snap = {f: getattr(research, f) for f in QRES_STAGE_FIELDS}
+    snap.update({f: getattr(research, f) for f in EXTENDED_SECTION_FIELDS})
     snap.update({
         "title": research.title, "summary": research.summary,
         "conflict_disclosed": research.conflict_disclosed, "conflict_detail": research.conflict_detail,

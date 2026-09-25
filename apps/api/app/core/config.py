@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     # a literal in auth/service.py would silently break in any non-local deployment.
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
+    # BYOK AI research assistant (research_ai module). The member's OWN AI provider
+    # API key is encrypted at rest with this secret (Fernet/AES-128-CBC+HMAC via the
+    # `cryptography` package) before ever reaching the database — Qfinera never
+    # provides/hardcodes an AI key of its own. If unset, a random key is generated
+    # at process start as a dev-safe fallback (existing encrypted keys from a prior
+    # run become undecryptable if the process restarts without a fixed secret set —
+    # acceptable for MVP/dev, NOT for any real deployment, which must set a fixed,
+    # persisted secret via environment variable).
+    AI_KEY_ENCRYPTION_SECRET: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
