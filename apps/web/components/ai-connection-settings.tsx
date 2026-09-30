@@ -5,13 +5,13 @@
  *
  * Reuses the existing, already-wired backend contract exactly as-is:
  *   POST   /ai/connect   { provider, api_key } -> StatusResponse (no key echoed back)
- *   GET    /ai/status?provider=anthropic       -> StatusResponse
- *   DELETE /ai/connect?provider=anthropic      -> 204
+ *   GET    /ai/status?provider=<provider>      -> StatusResponse
+ *   DELETE /ai/connect?provider=<provider>     -> 204
  * (apps/api/app/modules/ai/router.py + schemas.py). No new storage, no new
  * endpoint, no provider list endpoint exists so PROVIDERS below is hardcoded
- * to mirror the backend's own `VALID_PROVIDERS = ("anthropic",)`
- * (app/modules/ai/models.py) — if the backend ever adds a provider, this
- * array is the one place to extend, not a reason to invent a new fetch.
+ * to mirror the backend's provider registry. The OpenAI-compatible provider
+ * is displayed as "Ollama (OpenAI-Compatible)" and accepts an endpoint/model
+ * while using the backend provider value `openai_compatible`.
  *
  * SECURITY, matching the task's explicit checklist:
  * - The typed key lives only in this component's local `apiKey` state
@@ -37,8 +37,17 @@ interface AiStatus {
   connected_at: string | null;
 }
 
-/** Mirrors app/modules/ai/models.py's VALID_PROVIDERS exactly. */
-const PROVIDERS = [{ value: "anthropic", label: "Anthropic" }] as const;
+/** Mirrors app/modules/ai/models.py's VALID_PROVIDERS exactly (as of the
+ * AI-provider-registry pass: widened from Anthropic-only to also include
+ * OpenAI, since a real, already-written adapter for it existed in
+ * `integrations/ai_providers/openai_provider.py` — previously orphaned,
+ * now wired to this table's CHECK constraint via migration 0008). No other
+ * provider is listed because no adapter code for one exists in the repo. */
+const PROVIDERS = [
+  { value: "anthropic", label: "Anthropic" },
+  { value: "openai", label: "OpenAI" },
+  { value: "openai_compatible", label: "Ollama (OpenAI-Compatible)" },
+] as const;
 
 type Phase = "loading" | "idle" | "submitting" | "disconnecting";
 
@@ -51,6 +60,8 @@ export function AiConnectionSettings() {
 
   const [provider, setProvider] = useState<string>(PROVIDERS[0].value);
   const [apiKey, setApiKey] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [model, setModel] = useState("");
   const [showReplace, setShowReplace] = useState(false);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
 
@@ -81,7 +92,13 @@ export function AiConnectionSettings() {
     setActionError(null);
     setSuccessNote(null);
     try {
-      const data = await api.post<AiStatus>("/ai/connect", { provider, api_key: apiKey });
+      const data = await api.post<AiStatus>("/ai/connect", {
+        provider,
+        api_key: apiKey,
+        ...(provider === "openai_compatible"
+          ? { endpoint: endpoint.trim(), model: model.trim() }
+          : {}),
+      });
       setStatus(data);
       setSuccessNote(showReplace ? "Your key was replaced." : "Connected.");
       setShowReplace(false);
@@ -178,12 +195,51 @@ export function AiConnectionSettings() {
                   id="ai-provider"
                   className="qf-input"
                   value={provider}
-                  onChange={(e) => setProvider(e.target.value)}
+                  onChange={(e) => {
+                    setProvider(e.target.value);
+                    setActionError(null);
+                    setSuccessNote(null);
+                  }}
                   disabled={busy || PROVIDERS.length < 2}
                 >
                   {PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                 </select>
               </div>
+              {provider === "openai_compatible" && (
+                <>
+                  <div>
+                    <label className="qf-label" htmlFor="ai-endpoint">Endpoint</label>
+                    <input
+                      id="ai-endpoint"
+                      type="url"
+                      autoComplete="off"
+                      className="qf-input"
+                      placeholder="http://127.0.0.1:11434/v1"
+                      value={endpoint}
+                      onChange={(e) => setEndpoint(e.target.value)}
+                      disabled={busy}
+                    />
+                    <p className="text-[11px] text-ink-soft mt-1">
+                      OpenAI-compatible base URL. Do not include /chat/completions.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="qf-label" htmlFor="ai-model">Model</label>
+                    <input
+                      id="ai-model"
+                      type="text"
+                      autoComplete="off"
+                      className="qf-input"
+                      placeholder="qwen3-8b"
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      disabled={busy}
+                    />
+                  </div>
+                </>
+              )}
+
               <div>
                 <label className="qf-label" htmlFor="ai-api-key">API key</label>
                 <input
@@ -191,7 +247,7 @@ export function AiConnectionSettings() {
                   type="password"
                   autoComplete="off"
                   className="qf-input"
-                  placeholder="sk-ant-…"
+                  placeholder={provider === "openai_compatible" ? "API key (if required)" : "sk-ant-…"}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   disabled={busy}

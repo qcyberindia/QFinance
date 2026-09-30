@@ -22,7 +22,7 @@ router = APIRouter(prefix="/companies", tags=["companies"])
 async def _to_response(db: AsyncSession, company) -> CompanyResponse:
     counts = await service.get_content_counts(db, company.id)
     return CompanyResponse(
-        id=str(company.id), name=company.name, exchange=company.exchange,
+        id=str(company.id), name=company.name, symbol=company.symbol, exchange=company.exchange,
         sector=company.sector, industry=company.industry, website=company.website,
         description=company.description,
         is_merged_into=str(company.is_merged_into) if company.is_merged_into else None,
@@ -59,7 +59,7 @@ async def create_company(
     profile: Profile = Depends(require_role("ADMIN", "SUPER_ADMIN")),
 ):
     company = await service.create_company(
-        db, actor_id=profile.user_id, name=body.name, exchange=body.exchange,
+        db, actor_id=profile.user_id, name=body.name, exchange=body.exchange, symbol=body.symbol,
         sector=body.sector, industry=body.industry, website=body.website, description=body.description,
     )
     return await _to_response(db, company)

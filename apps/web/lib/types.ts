@@ -80,6 +80,7 @@ export interface ResearchFull {
   id: string;
   author_id: string;
   company_id: string;
+  company: CompanyRef;
   research_type: string;
   industry: string | null;
   status: "draft" | "published";
@@ -139,8 +140,22 @@ export interface ConnectionStatusResponse {
 }
 
 // ---- Companies (for association pickers) ----
-export interface Company { id: string; name: string; exchange: string }
+export interface Company { id: string; name: string; symbol: string | null; exchange: string }
 export interface CompanyListResponse { items: Company[]; total: number; page: number; page_size: number }
+
+// ---- Research Subject (Research Phase 3) ----
+// Mirrors research/schemas.py's CompanyRef exactly — nested inside
+// ResearchFull.company, replacing the earlier client-side "match company_id
+// against a fetched company list" workaround.
+export interface CompanyRef {
+  id: string;
+  name: string | null;
+  symbol: string | null;
+  exchange: string | null;
+  sector: string | null;
+  industry: string | null;
+  description: string | null;
+}
 
 // ---- Research Library (API Spec §7.4.1/§7.4.2) ----
 // Mirrors research/schemas.py's LibraryItem | ResearchPreviewResponse union

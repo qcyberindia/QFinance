@@ -1,4 +1,13 @@
 """companies table — Architecture §5.3, Database Schema V1, CO-001-004/OD-23.
+
+SYMBOL FIELD (this pass): added `symbol` (nullable) — the exchange ticker
+(e.g. "TATAPOWER"). Genuinely required, not a nice-to-have: the Research
+Subject feature this migration supports explicitly needs to show a symbol
+alongside the company name (per the task's own worked example), and no
+other field on this table can stand in for it. Nullable because not every
+future company record is guaranteed to have a confirmed ticker at creation
+time — absence is shown honestly in the UI, never fabricated. See
+alembic/versions/0009_companies_add_symbol.py.
 WRITTEN, NOT EXECUTED."""
 import uuid
 from datetime import datetime
@@ -19,6 +28,7 @@ class Company(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String, nullable=True)
     exchange: Mapped[str] = mapped_column(String, nullable=False)
     sector: Mapped[str | None] = mapped_column(String, nullable=True)
     industry: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -7,7 +7,7 @@ WRITTEN, NOT EXECUTED — no real database has been reached in this session.
 """
 import uuid
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -17,7 +17,7 @@ from app.modules.companies.schemas import VALID_EXCHANGES
 
 
 async def create_company(db: AsyncSession, *, actor_id: uuid.UUID, name: str, exchange: str,
-                          sector: str | None, industry: str | None, website: str | None,
+                          symbol: str | None, sector: str | None, industry: str | None, website: str | None,
                           description: str | None) -> Company:
     if exchange not in VALID_EXCHANGES:
         # OD-23 — explicit application-level rejection, not just relying on the DB CHECK,
@@ -28,7 +28,7 @@ async def create_company(db: AsyncSession, *, actor_id: uuid.UUID, name: str, ex
             400,
         )
     company = Company(
-        id=uuid.uuid4(), name=name, exchange=exchange, sector=sector,
+        id=uuid.uuid4(), name=name, exchange=exchange, symbol=symbol, sector=sector,
         industry=industry, website=website, description=description,
     )
     db.add(company)
@@ -54,10 +54,15 @@ async def list_companies(db: AsyncSession, *, search: str | None, page: int, pag
     count_stmt = select(func.count()).select_from(Company).where(
         Company.deleted_at.is_(None), Company.is_merged_into.is_(None)
     )
-    if search:
-        # Uses the ix_companies_name_trgm GIN index defined in the migration (CO-002).
-        stmt = stmt.where(Company.name.ilike(f"%{search}%"))
-        count_stmt = count_stmt.where(Company.name.ilike(f"%{search}%"))
+    if search and search.strip():
+        # Match on name OR ticker symbol. Symbol matching is required, not cosmetic:
+        # "infy" is Infosys's ticker but is not a substring of its name, so a
+        # name-only search cannot find it. Name matching still uses the
+        # ix_companies_name_trgm GIN index defined in the migration (CO-002).
+        term = f"%{search.strip()}%"
+        match = or_(Company.name.ilike(term), Company.symbol.ilike(term))
+        stmt = stmt.where(match)
+        count_stmt = count_stmt.where(match)
     stmt = stmt.order_by(Company.name).offset((page - 1) * page_size).limit(page_size)
     total = (await db.execute(count_stmt)).scalar_one()
     items = (await db.execute(stmt)).scalars().all()

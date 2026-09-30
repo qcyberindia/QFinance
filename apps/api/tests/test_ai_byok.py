@@ -150,7 +150,17 @@ def test_model_column_is_encrypted_api_key_not_plaintext_api_key():
 
 
 def test_valid_providers_matches_db_check_constraint():
-    assert VALID_PROVIDERS == ("anthropic",)
+    """Pins model constant AND DB CHECK together (a provider addition must touch
+    models.py, a migration and this test in the same change). Widened to include
+    "openai_compatible" (migration 0010); UI label "OpenAI-Compatible" — not
+    "Ollama", the provider is deliberately backend-neutral."""
+    assert VALID_PROVIDERS == ("anthropic", "openai", "openai_compatible")
+    check = next(
+        c for c in AIConnection.__table__.constraints
+        if getattr(c, "name", None) == "ck_ai_connections_provider"
+    )
+    for provider in VALID_PROVIDERS:
+        assert f"'{provider}'" in str(check.sqltext)
 
 
 # ---------------------------------------------------------------------------
@@ -163,14 +173,16 @@ def test_status_response_has_no_key_shaped_field():
     field_names = set(StatusResponse.model_fields.keys())
     forbidden = {"api_key", "encrypted_api_key", "key", "secret", "token"}
     assert field_names & forbidden == set()
-    assert field_names == {"connected", "provider", "connected_at"}
+    # endpoint/model (OpenAI-Compatible, migration 0010) are NOT secrets and may be returned.
+    assert field_names == {"connected", "provider", "connected_at", "endpoint", "model"}
 
 
 def test_connect_request_only_accepts_provider_and_api_key():
     """The inbound request legitimately carries `api_key` (the member is
-    submitting it) — this just pins the shape so it doesn't silently grow
-    other sensitive fields unnoticed."""
-    assert set(ConnectRequest.model_fields.keys()) == {"provider", "api_key"}
+    submitting it) — this pins the shape so it doesn't silently grow other
+    sensitive fields unnoticed. `endpoint`/`model` are the OpenAI-Compatible
+    connection settings (non-secret)."""
+    assert set(ConnectRequest.model_fields.keys()) == {"provider", "api_key", "endpoint", "model"}
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +200,7 @@ def _depends_on(param_default, target) -> bool:
 
 
 def test_every_ai_route_requires_verified_email():
-    assert len(ai_router.routes) == 3  # connect (POST), status (GET), connect (DELETE)
+    assert len(ai_router.routes) == 5  # connect (POST), status, connections, test-connection (POST), connect (DELETE)
     for route in ai_router.routes:
         sig = inspect.signature(route.endpoint)
         depends_on_verified_email = any(
@@ -199,7 +211,7 @@ def test_every_ai_route_requires_verified_email():
 
 def test_mutating_ai_routes_require_csrf():
     mutating = [r for r in ai_router.routes if r.methods & {"POST", "DELETE"}]
-    assert len(mutating) == 2
+    assert len(mutating) == 3  # connect, test-connection, disconnect
     for route in mutating:
         explicit_deps = [d.dependency for d in route.dependencies]
         assert require_csrf in explicit_deps, f"{route.path} {route.methods} does not require CSRF"
@@ -218,7 +230,7 @@ def test_status_route_is_not_mutating_and_has_no_csrf_requirement():
 
 def test_router_is_mounted_under_ai_prefix():
     paths = {route.path for route in ai_router.routes}
-    assert paths == {"/ai/connect", "/ai/status"}
+    assert paths == {"/ai/connect", "/ai/status", "/ai/connections", "/ai/test-connection"}
     assert all(p.startswith("/ai/") for p in paths)
 
 

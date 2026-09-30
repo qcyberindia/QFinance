@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api-client";
-import type { Company, CompanyListResponse, ResearchFull } from "@/lib/types";
+import type { ResearchFull } from "@/lib/types";
 import { Card, ErrorState, LoadingState } from "@/components/states";
 import { ThesisCardFromResearch } from "@/components/ThesisCard";
 import { ResearchAssistantPanel } from "@/components/research-assistant-panel";
@@ -306,10 +306,60 @@ function ReviewSection({ item, onEditSection }: { item: ResearchFull; onEditSect
   );
 }
 
+/** Research Brief — orientation only, never a generated investment report.
+ * Shows exactly what's actually known (company static data, already-saved
+ * research fields) and is explicit about what ISN'T connected, rather than
+ * silently omitting it or implying it might exist. No external fetch, no AI
+ * call — everything here comes from the `item` already loaded for this page. */
+function ResearchBriefCard({ item }: { item: ResearchFull }) {
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-1">
+        <label className="qf-label mb-0">Research Brief</label>
+        <span className="qf-derived-badge">Orientation, not a report</span>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-4 mt-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-soft mb-1">Company</p>
+          <p className="text-sm font-semibold">{item.company.name ?? "—"}</p>
+          <p className="text-xs text-ink-soft mt-0.5">
+            {item.company.symbol ?? "No symbol on file"}
+            {item.company.exchange ? ` · ${item.company.exchange}` : ""}
+          </p>
+          {(item.company.sector || item.company.industry) && (
+            <p className="text-xs text-ink-soft mt-0.5">
+              {[item.company.sector, item.company.industry].filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {item.company.description && (
+            <p className="text-xs text-ink-soft mt-2">{item.company.description}</p>
+          )}
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-soft mb-1">Research Question</p>
+          <p className="text-sm">{item.summary || "— not yet written —"}</p>
+        </div>
+      </div>
+      <div className="mt-4 pt-3" style={{ borderTop: "1px dashed var(--line)" }}>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-soft mb-1.5">Data Availability</p>
+        <p className="text-xs mb-1.5" style={{ color: "var(--down)" }}>Current information source not connected.</p>
+        <ul className="text-xs text-ink-soft space-y-1">
+          <li>Current market data — <span style={{ color: "var(--down)" }}>Not connected</span></li>
+          <li>Recent company developments — <span style={{ color: "var(--down)" }}>Not connected</span></li>
+          <li>Financial data — <span style={{ color: "var(--down)" }}>Not connected</span></li>
+        </ul>
+        <p className="text-[11px] text-ink-soft mt-2">
+          This brief only shows static company information already on file and what you've written yourself —
+          nothing here is fetched live or AI-generated.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 export default function ResearchWorkspacePage() {
   const { id } = useParams<{ id: string }>();
   const [item, setItem] = useState<ResearchFull | null>(null);
-  const [companies, setCompanies] = useState<Company[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
 
@@ -344,13 +394,13 @@ export default function ResearchWorkspacePage() {
 
   useEffect(() => {
     load();
-    api
-      .get<CompanyListResponse>("/companies?page_size=100")
-      .then((d) => setCompanies(d.items))
-      .catch(() => setCompanies([]));
   }, [load]);
 
-  const companyName = companies.find((c) => c.id === item?.company_id)?.name ?? "This company";
+  // `item.company` (name/symbol/exchange/sector/industry/description) now
+  // comes straight from GET /research/{id} — Research Phase 3. Previously
+  // this page had to separately fetch up to 100 companies and match
+  // `item.company_id` against that list client-side just to show a name;
+  // that workaround is gone.
 
   async function patchAndReload(patch: Record<string, unknown>) {
     if (!item) return;
@@ -460,7 +510,9 @@ export default function ResearchWorkspacePage() {
             </span>
             <h1 className="font-display text-2xl truncate">{item.title}</h1>
             <p className="text-sm text-ink-soft">
-              {companyName} · {item.research_type.replace("_", " ")}
+              {item.company.name ?? "This company"}
+              {item.company.symbol && <span className="font-mono"> · {item.company.symbol}</span>}
+              {" · "}{item.research_type.replace("_", " ")}
             </p>
             <div className="mt-2 pt-2" style={{ borderTop: "1px dashed var(--line)" }}>
               <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-soft">Research Question</p>
@@ -490,7 +542,9 @@ export default function ResearchWorkspacePage() {
         </div>
       </Card>
 
-      {item.status === "published" && <ThesisCardFromResearch research={item} companyName={companyName} />}
+      {item.status === "published" && <ThesisCardFromResearch research={item} companyName={item.company.name ?? "This company"} />}
+
+      <ResearchBriefCard item={item} />
 
       <div className="md:hidden">
         <button
@@ -602,7 +656,7 @@ export default function ResearchWorkspacePage() {
         </div>
 
         <div className="hidden lg:block">
-          <ResearchAssistantPanel currentQuestion={item.summary} />
+          <ResearchAssistantPanel researchId={item.id} currentQuestion={item.summary} onStageChange={setActiveSection} />
         </div>
       </div>
 
@@ -617,7 +671,7 @@ export default function ResearchWorkspacePage() {
         </button>
         {assistantOpenMobile && (
           <div className="mt-2">
-            <ResearchAssistantPanel currentQuestion={item.summary} />
+            <ResearchAssistantPanel researchId={item.id} currentQuestion={item.summary} onStageChange={setActiveSection} />
           </div>
         )}
       </div>

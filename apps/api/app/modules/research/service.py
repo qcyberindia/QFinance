@@ -26,6 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit_log
 from app.core.errors import Forbidden, NotFound, QFinanceAPIError
 from app.modules.analytics.models import emit_event
+from app.modules.companies.models import Company
+from app.modules.research.ai_context import research_question_of
+from app.modules.research.brief import build_initial_brief
 from app.modules.research.models import (
     EXTENDED_SECTION_FIELDS, PLACEHOLDER_SUMMARY, PLACEHOLDER_TITLE, QRES_STAGE_FIELDS, Research, ResearchSource,
     ResearchTag, ResearchVersion,
@@ -45,6 +48,23 @@ _PATCHABLE_CONTENT_FIELDS = (
 async def create_research(db: AsyncSession, *, author_id: uuid.UUID, company_id: uuid.UUID,
                            research_type: str, industry: str | None, title: str | None,
                            summary: str | None) -> Research:
+    # RESEARCH SUBJECT VALIDATION (Research Phase 3): previously relied
+    # entirely on the DB foreign-key constraint to reject a bad company_id —
+    # correct as a last line of defense, but it surfaces as a raw
+    # IntegrityError/500, not the clean, explicit rejection the product spec
+    # asks for ("Invalid company rejected"). Checked explicitly here first,
+    # same pattern as companies/service.py's own NotFound usage. A merged
+    # (archived) company is also rejected — it's not a valid research subject
+    # going forward, existing research already pointing at it is untouched.
+    company = await db.get(Company, company_id)
+    if company is None or company.deleted_at is not None:
+        raise NotFound("Company not found.")
+    if company.is_merged_into is not None:
+        raise QFinanceAPIError(
+            "COMPANY_MERGED",
+            "This company record has been merged into another company; start research on that one instead.",
+            400,
+        )
     research = Research(
         id=uuid.uuid4(), author_id=author_id, company_id=company_id,
         research_type=research_type, industry=industry,
@@ -92,19 +112,34 @@ async def _load_author_and_company(db: AsyncSession, *, author_id: uuid.UUID, co
     already found and fixed in profile/service.py and community/service.py's
     `_load_author`, just not yet applied here. `/research/library` and
     `/research/search` are public-facing surfaces; `username` is the only
-    public identity attached to a research item's author now."""
+    public identity attached to a research item's author now.
+
+    RESEARCH SUBJECT CONTEXT (Research Phase 3): `company` now carries
+    symbol/exchange/sector/industry/description alongside id/name —
+    previously name-only, which is why the frontend workspace had to
+    separately fetch and client-side-match a whole company LIST just to show
+    a name next to `company_id`. This is company data only (public/static
+    per companies/router.py's own docstring) — no user identity fields are
+    touched by this change.
+    """
     author_row = (await db.execute(
         text("SELECT user_id, username FROM profiles WHERE user_id = :uid"),
         {"uid": str(author_id)},
     )).first()
     company_row = (await db.execute(
-        text("SELECT id, name FROM companies WHERE id = :cid"),
+        text("SELECT id, name, symbol, exchange, sector, industry, description FROM companies WHERE id = :cid"),
         {"cid": str(company_id)},
     )).first()
     author = ({"id": str(author_row.user_id), "username": author_row.username}
               if author_row else {"id": str(author_id), "username": None})
-    company = ({"id": str(company_row.id), "name": company_row.name}
-               if company_row else {"id": str(company_id), "name": None})
+    company = ({
+        "id": str(company_row.id), "name": company_row.name, "symbol": company_row.symbol,
+        "exchange": company_row.exchange, "sector": company_row.sector,
+        "industry": company_row.industry, "description": company_row.description,
+    } if company_row else {
+        "id": str(company_id), "name": None, "symbol": None, "exchange": None,
+        "sector": None, "industry": None, "description": None,
+    })
     return author, company
 
 
@@ -120,16 +155,32 @@ def _is_visible_to(research: Research, *, viewer_id: uuid.UUID | None, is_staff:
 
 
 def serialize_for_viewer(research: Research, *, sources: list[ResearchSource], tags: list[str],
-                          viewer_is_member: bool) -> dict:
+                          viewer_is_member: bool, company: dict) -> dict:
     """§7.1.2/§7.4.1/§7.4.2 shared tier-gating rule, access_tier checked FIRST:
     (1) access_tier == 'free_example' -> full representation regardless of tier (MEM-004)
     (2) access_tier == 'core' -> existing LIB-003 rule: MEMBER sees full, FREE sees preview.
     Author/staff callers always get the full representation (checked by the caller
     before calling this — see router.py — so this function only implements the
-    *tier* half of visibility, not the ownership/staff half)."""
+    *tier* half of visibility, not the ownership/staff half).
+
+    `company` (Research Phase 3): the caller-loaded Research Subject context
+    (name/symbol/exchange/sector/industry/description) — see
+    `_load_author_and_company`. Included only on the full representation, not
+    the preview branch, matching §7.1.2's existing preview shape (which never
+    exposed company info before, and still doesn't now — no scope change to
+    what a FREE viewer of a 'core' item can see).
+
+    `brief` (Research Phase 3): the Initial Research Brief, built purely from
+    `company` + `research.title` (the persisted research question — no
+    separate `research_question` column exists or is added; `title` already
+    serves exactly that role per `create_research`). Included only on the
+    full representation for the same reason as `company` — it is orientation
+    for someone actually working the item, not preview-teaser content."""
     if research.access_tier == "free_example" or viewer_is_member:
         return {
             "id": str(research.id), "author_id": str(research.author_id), "company_id": str(research.company_id),
+            "company": company,
+            "brief": build_initial_brief(company=company, research_question=research_question_of(research)),
             "research_type": research.research_type, "industry": research.industry,
             "status": research.status, "moderation_status": research.moderation_status,
             "access_tier": research.access_tier, "title": research.title, "summary": research.summary,
@@ -160,10 +211,11 @@ async def get_research_view(db: AsyncSession, research_id: uuid.UUID, *, viewer_
         raise NotFound("Research item not found.")  # §0.5 — MVP doesn't distinguish 404 vs 403 here
     sources = await _load_sources(db, research_id)
     tags = await _load_tags(db, research_id)
+    _, company = await _load_author_and_company(db, author_id=research.author_id, company_id=research.company_id)
     # Author/staff always get the full representation, independent of access_tier.
     if is_staff or research.author_id == viewer_id:
-        return serialize_for_viewer(research, sources=sources, tags=tags, viewer_is_member=True)
-    return serialize_for_viewer(research, sources=sources, tags=tags, viewer_is_member=viewer_is_member)
+        return serialize_for_viewer(research, sources=sources, tags=tags, viewer_is_member=True, company=company)
+    return serialize_for_viewer(research, sources=sources, tags=tags, viewer_is_member=viewer_is_member, company=company)
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +318,71 @@ async def patch_published(db: AsyncSession, *, research_id: uuid.UUID, actor_id:
 # Sources
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Research Assistant — Add to Research (explicit user action only)
+# ---------------------------------------------------------------------------
+
+async def add_ai_finding(db: AsyncSession, *, research_id: uuid.UUID, actor_id: uuid.UUID,
+                          stage: str, question: str, answer: str) -> dict:
+    """Persists an AI answer into the EXISTING section field for `stage` —
+    reuses the same columns/PATCH-writable fields every manual section edit
+    already writes to (research/sections.py's ADD_TO_RESEARCH_STAGES), rather
+    than inventing a separate findings/notes table. This is precisely why the
+    result stays editable afterward: it IS the section's own textarea field,
+    not a special immutable AI record.
+
+    Idempotent by content: if `answer` (trimmed) is already a substring of
+    the field's current value, nothing is written and `already_added=True`
+    is returned — a safe, content-based duplicate check appropriate to a
+    flat-text field (there is no separate findings table to key a real
+    duplicate check against; see this module's docstring / sections.py for
+    why one wasn't invented).
+
+    Only drafts: publishing runs a distinct, stricter validation/versioning
+    gate (patch_published) that this function deliberately does not
+    duplicate — flagged as a real, current limitation (see final report),
+    not silently worked around.
+    """
+    from app.modules.research.sections import ADD_TO_RESEARCH_STAGES
+
+    if stage not in ADD_TO_RESEARCH_STAGES:
+        raise QFinanceAPIError(
+            "INVALID_AI_STAGE",
+            f"stage must be one of {sorted(ADD_TO_RESEARCH_STAGES)}.",
+            400,
+            fields={"stage": "invalid"},
+        )
+    answer_clean = (answer or "").strip()
+    if not answer_clean:
+        raise QFinanceAPIError("VALIDATION_ERROR", "There's no AI answer to add.", 400, fields={"answer": "required"})
+
+    research = await get_research_or_404(db, research_id)
+    _require_author(research, actor_id)
+    if research.status != "draft":
+        raise QFinanceAPIError(
+            "RESEARCH_PUBLISHED",
+            "This research item is already published. Edit it (which starts a new version) before adding more findings.",
+            400,
+        )
+
+    field = ADD_TO_RESEARCH_STAGES[stage]
+    current = getattr(research, field) or ""
+    if answer_clean in current:
+        return {"added": False, "already_added": True, "stage": stage, "field": field, "content": current}
+
+    was_empty = current.strip() == ""
+    new_content = answer_clean if was_empty else f"{current}\n\n{answer_clean}"
+    setattr(research, field, new_content)
+
+    await emit_event(db, user_id=actor_id, event_type="research_draft_updated",
+                      entity_type="research", entity_id=research.id)
+    if was_empty:
+        await emit_event(db, user_id=actor_id, event_type="research_section_completed",
+                          entity_type="research", entity_id=research.id, metadata={"field": field})
+    await db.commit()
+    return {"added": True, "already_added": False, "stage": stage, "field": field, "content": new_content}
+
+
 async def add_source(db: AsyncSession, *, research_id: uuid.UUID, actor_id: uuid.UUID,
                       label: str, reference: str, supports_claim: str | None) -> ResearchSource:
     research = await get_research_or_404(db, research_id)
@@ -328,7 +445,23 @@ async def publish(db: AsyncSession, *, research_id: uuid.UUID, actor_id: uuid.UU
 
     research.status = "published"
     if is_first_publish:
-        research.published_at = datetime.now(timezone.utc)
+        # BUG FIX (this pass, root-caused from a real executed pytest failure —
+        # not a test bug): `research.published_at` (research/models.py) has no
+        # `timezone=True` on its column, matching every other timestamp column
+        # in that same model file — it is `TIMESTAMP WITHOUT TIME ZONE` in
+        # Postgres. Assigning a tz-AWARE `datetime.now(timezone.utc)` here made
+        # asyncpg refuse to encode the bind parameter at all ("can't subtract
+        # offset-naive and offset-aware datetimes"), a 500 on every real
+        # first-publish. `created_at`/`updated_at` never hit this because they
+        # use `server_default=func.now()` (computed inside Postgres, never a
+        # Python object passed as a parameter) — this is the one place in this
+        # model where application code constructs the datetime itself. Fixed by
+        # storing a naive UTC datetime, matching the column's actual type,
+        # rather than widening the column via a migration (unnecessary schema
+        # risk for a same-information, zero-ambiguity fix: the column was
+        # always implicitly UTC already, every value ever written to it will
+        # have been produced by this exact line).
+        research.published_at = datetime.now(timezone.utc).replace(tzinfo=None)
     research.current_version += 1
     tags = await _load_tags(db, research_id)
     db.add(ResearchVersion(

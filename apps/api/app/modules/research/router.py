@@ -18,10 +18,15 @@ from app.core.db import get_db
 from app.core.deps import get_current_profile, require_csrf, require_role, require_verified_profile
 from app.modules.research import service
 from app.modules.research.schemas import (
-    AccessTierUpdateRequest, AccessTierUpdateResponse, PublishRequest, PublishToCommunityRequest,
+    AccessTierUpdateRequest, AccessTierUpdateResponse, AddAIFindingRequest, AddAIFindingResponse,
+    PublishRequest, PublishToCommunityRequest,
     ResearchCreateRequest, ResearchCreateResponse, ResearchPatchRequest, SourceCreateRequest, SourceResponse,
+    ResearchAIAskRequest, ResearchAIAskResponse,
 )
 from app.modules.users.models import Profile
+from app.modules.ai import service as ai_service
+from app.modules.research.ai_context import get_ai_context
+from app.modules.research.sections import next_stage_key
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -139,6 +144,129 @@ async def create_research(
                                    title=research.title, summary=research.summary)
 
 
+@router.post(
+    "/{research_id}/ai/ask",
+    response_model=ResearchAIAskResponse,
+    dependencies=[Depends(require_csrf)],
+)
+async def ask_research_ai(
+    research_id: uuid.UUID,
+    body: ResearchAIAskRequest,
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(require_verified_profile),
+):
+    """Ask the user's connected BYOK Research Assistant about this research.
+
+    The AI receives only persisted research context plus the user's question.
+    The API key is resolved/decrypted internally and is never exposed to the
+    request or response.
+    """
+    question = body.normalized_question
+
+    if not question:
+        from app.core.errors import QFinanceAPIError
+        raise QFinanceAPIError(
+            "AI_QUESTION_EMPTY",
+            "Enter a research question.",
+            400,
+        )
+
+    if len(question) > 4000:
+        from app.core.errors import QFinanceAPIError
+        raise QFinanceAPIError(
+            "AI_QUESTION_TOO_LONG",
+            "Research questions must be 4,000 characters or fewer.",
+            400,
+        )
+
+    context = await get_ai_context(
+        db,
+        research_id,
+        actor_id=profile.user_id,
+    )
+
+    adapter, api_key, connection = await ai_service.resolve_provider_for_user(
+        db,
+        user_id=profile.user_id,
+    )
+
+    context_payload = {
+        "research_question": context.research_question,
+        "subject_type": context.subject_type,
+        "company": {
+            "name": context.company_name,
+            "symbol": context.symbol,
+            "exchange": context.exchange,
+            "sector": context.sector,
+            "industry": context.industry,
+            "description": context.company_description,
+        },
+        "current_stage": context.current_stage,
+        "saved_findings": context.saved_findings,
+        "assumptions": context.assumptions,
+        "risks": context.risks,
+        "invalidation_conditions": context.invalidation_conditions,
+    }
+
+    system_prompt = """You are Qfinera's Research Assistant.
+
+Your role is to help a retail investor investigate and challenge an
+investment research question. You are an analytical research assistant,
+not a financial adviser.
+
+RULES:
+- Use the research context supplied below.
+- Do not invent company facts, financial figures, sources, or events.
+- Clearly distinguish facts from interpretation.
+- If the supplied context is insufficient, say what information is missing.
+- Do not issue personalized BUY, SELL, or HOLD instructions.
+- Do not provide target prices or trading signals.
+- Challenge assumptions and identify risks where relevant.
+- Keep the response structured and educational.
+- Do not modify the research document yourself.
+- The user decides what, if anything, gets added to their research.
+
+RESEARCH CONTEXT:
+""" + __import__("json").dumps(context_payload, ensure_ascii=False, default=str)
+
+    answer = await adapter.ask(
+        api_key=api_key,
+        system_prompt=system_prompt,
+        question=question,
+    )
+
+    return ResearchAIAskResponse(
+        answer=answer,
+        current_stage=context.current_stage,
+        provider=connection.provider,
+        model=connection.model,
+    )
+
+
+@router.post(
+    "/{research_id}/ai/add-to-research",
+    response_model=AddAIFindingResponse,
+    dependencies=[Depends(require_csrf)],
+)
+async def add_ai_finding_to_research(
+    research_id: uuid.UUID,
+    body: AddAIFindingRequest,
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(require_verified_profile),
+):
+    """Explicit-only: the AI never calls this itself; only a user clicking
+    "Add to Research" reaches this route. Ownership is enforced in
+    service.add_ai_finding via the same `_require_author` every other mutating
+    research route uses. The saved content lands in the SAME field the
+    section's own textarea edits — it is immediately editable there, not a
+    separate immutable AI record (see service.add_ai_finding's docstring)."""
+    result = await service.add_ai_finding(
+        db, research_id=research_id, actor_id=profile.user_id,
+        stage=body.stage, question=body.question, answer=body.answer,
+    )
+    return AddAIFindingResponse(**result)
+
+
 @router.get("/{research_id}")
 async def get_research(
     research_id: uuid.UUID,
@@ -186,7 +314,8 @@ async def add_source(
         db, research_id=research_id, actor_id=profile.user_id,
         label=body.label, reference=body.reference, supports_claim=body.supports_claim,
     )
-    return SourceResponse.model_validate(source)
+    return SourceResponse(id=str(source.id), label=source.label, reference=source.reference,
+                           supports_claim=source.supports_claim)
 
 
 @router.delete("/{research_id}/sources/{source_id}", status_code=204, dependencies=[Depends(require_csrf)])
@@ -209,7 +338,8 @@ async def list_sources(
         db, research_id, viewer_id=profile.user_id, viewer_is_member=_is_member(profile), is_staff=_is_staff(profile),
     )
     sources = await service.list_sources(db, research_id)
-    return [SourceResponse.model_validate(s) for s in sources]
+    return [SourceResponse(id=str(s.id), label=s.label, reference=s.reference, supports_claim=s.supports_claim)
+            for s in sources]
 
 
 # ---------------------------------------------------------------------------

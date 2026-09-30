@@ -10,6 +10,7 @@ VALID_EXCHANGES = ("NSE", "BSE", "OTHER_RECOGNIZED")
 class CompanyCreateRequest(BaseModel):
     name: str
     exchange: str
+    symbol: str | None = None
     sector: str | None = None
     industry: str | None = None
     website: str | None = None
@@ -18,6 +19,7 @@ class CompanyCreateRequest(BaseModel):
 
 class CompanyUpdateRequest(BaseModel):
     name: str | None = None
+    symbol: str | None = None
     sector: str | None = None
     industry: str | None = None
     website: str | None = None
@@ -31,6 +33,7 @@ class CompanyMergeRequest(BaseModel):
 class CompanyResponse(BaseModel):
     id: str
     name: str
+    symbol: str | None
     exchange: str
     sector: str | None
     industry: str | None

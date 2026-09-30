@@ -4,8 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api-client";
-import type { Company, CompanyListResponse, MyResearchItem, MyResearchListResponse } from "@/lib/types";
+import type { Company, MyResearchItem, MyResearchListResponse } from "@/lib/types";
 import { Card, EmptyState, ErrorState, LoadingState } from "@/components/states";
+import { CompanyPicker } from "@/components/company-picker";
 
 /** "Research format" — the EXISTING backend `research_type` field
  * (unchanged, same three values as before). Deliberately renamed in the UI
@@ -46,8 +47,10 @@ function StatusPill({ status }: { status: string }) {
 
 export default function ResearchPage() {
   const router = useRouter();
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [companyId, setCompanyId] = useState("");
+  // The selected company is a real record returned by GET /companies (its
+  // `id` is what POST /research receives). There is no client-side company
+  // list any more — CompanyPicker searches the backend as the user types.
+  const [company, setCompany] = useState<Company | null>(null);
   const [subject, setSubject] = useState<SubjectKey>("stock");
   const [researchFormat, setResearchFormat] = useState<(typeof RESEARCH_FORMATS)[number]>(RESEARCH_FORMATS[0]);
   const [question, setQuestion] = useState("");
@@ -57,13 +60,6 @@ export default function ResearchPage() {
 
   const [items, setItems] = useState<MyResearchItem[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-
-  useEffect(() => {
-    api
-      .get<CompanyListResponse>("/companies?page_size=100")
-      .then((data) => setCompanies(data.items))
-      .catch(() => setCompanies([]));
-  }, []);
 
   const loadMine = useCallback(async () => {
     setListError(null);
@@ -85,7 +81,7 @@ export default function ResearchPage() {
       setCreateError("This research subject isn't available yet.");
       return;
     }
-    if (!companyId) {
+    if (!company) {
       setCreateError("Choose what you're researching first.");
       return;
     }
@@ -101,7 +97,7 @@ export default function ResearchPage() {
       // `summary`, not `title`, so the question typed here must land in
       // both or it silently disappears once the workspace opens.
       const created = await api.post<{ id: string }>("/research", {
-        company_id: companyId,
+        company_id: company.id,
         research_type: researchFormat,
         title: question,
         summary: question,
@@ -177,12 +173,7 @@ export default function ResearchPage() {
             {subject === "stock" && (
               <div>
                 <label className="qf-label" htmlFor="research-company">2. Company</label>
-                <select id="research-company" className="qf-input" value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
-                  <option value="">Search company…</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name} ({c.exchange})</option>
-                  ))}
-                </select>
+                <CompanyPicker inputId="research-company" value={company} onChange={setCompany} />
               </div>
             )}
 
@@ -208,7 +199,7 @@ export default function ResearchPage() {
             {createError && <p className="text-sm" style={{ color: "var(--down)" }}>{createError}</p>}
             <button
               type="submit"
-              disabled={creating || subject !== "stock" || !companyId || !question.trim()}
+              disabled={creating || subject !== "stock" || !company || !question.trim()}
               className="qf-btn-primary w-full"
               title={subject !== "stock" ? "This research subject isn't available yet." : undefined}
             >

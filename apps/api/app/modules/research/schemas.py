@@ -45,6 +45,41 @@ class ResearchPatchRequest(BaseModel):
     change_note: str | None = None  # only meaningful/required on a published item, §7.1.4
 
 
+
+class ResearchAIAskRequest(BaseModel):
+    """A question sent to the user's connected BYOK Research Assistant."""
+    question: str
+
+    @property
+    def normalized_question(self) -> str:
+        return self.question.strip()
+
+
+class ResearchAIAskResponse(BaseModel):
+    """AI answer plus the research context stage used for the response."""
+    answer: str
+    current_stage: str
+    provider: str
+    model: str | None = None
+
+
+class AddAIFindingRequest(BaseModel):
+    """Explicit user action only — the AI never calls this itself. `stage` must
+    be one of research/sections.py's ADD_TO_RESEARCH_STAGES keys (validated in
+    service.py, not here, so the error message can list the exact valid set)."""
+    stage: str
+    question: str
+    answer: str
+
+
+class AddAIFindingResponse(BaseModel):
+    added: bool
+    already_added: bool
+    stage: str
+    field: str
+    content: str
+
+
 class PublishRequest(BaseModel):
     change_note: str | None = None
 
@@ -73,12 +108,33 @@ class DisclosureBlock(BaseModel):
     research_date: date | None
 
 
+class CompanyRef(BaseModel):
+    """Nested company reference — API Spec §7.4.1/§7.4.2 library/search response
+    contract. Extended in Research Phase 3 with symbol/exchange/sector/
+    industry/description (all optional — absence is real absence, never
+    fabricated) so `GET /research/{id}` can carry the full Research Subject
+    context in one call, per that phase's explicit preference for reusing
+    this endpoint over adding a dedicated one. Defined here (moved above
+    ResearchFullResponse, which is the first class to reference it —
+    Pydantic v2 evaluates annotations at class-definition time, so the
+    referencing class must come after this one, not before)."""
+    id: str
+    name: str | None = None
+    symbol: str | None = None
+    exchange: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    description: str | None = None
+
+
 class ResearchFullResponse(BaseModel):
     """§7.1.2 full representation — returned to author, MODERATOR+, or any
     caller once access_tier/tier-gating rules permit it (see router.py)."""
     id: str
     author_id: str
     company_id: str
+    company: CompanyRef
+    brief: dict
     research_type: str
     industry: str | None
     status: str
@@ -115,13 +171,6 @@ class AuthorRef(BaseModel):
     `username` is the only public identity a research item's author has."""
     id: str
     username: str | None = None
-
-
-class CompanyRef(BaseModel):
-    """Nested company reference — API Spec §7.4.1/§7.4.2 library/search response
-    contract."""
-    id: str
-    name: str | None = None
 
 
 class ResearchPreviewResponse(BaseModel):
