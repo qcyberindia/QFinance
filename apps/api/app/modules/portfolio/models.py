@@ -1,9 +1,9 @@
 """Portfolio module models — Database Schema V2 §1 `broker_connections`.
 WRITTEN, NOT EXECUTED.
 
-`access_token` is application-layer-encrypted-at-rest is a recommended
-hardening NOT implemented in MVP — flagged explicitly in the locked schema
-doc and restated here rather than silently omitted. This column is never
+`access_token` is stored ENCRYPTED (Fernet, app/core/crypto.py — the same
+helper as BYOK AI keys); service.py encrypts before storing and decrypts
+only in memory to call the broker. This column is never
 serialized into any API response anywhere in this module (see schemas.py —
 no response schema includes it at all, not even as an optional/masked field).
 """
@@ -33,7 +33,7 @@ class BrokerConnection(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     broker: Mapped[str] = mapped_column(Text, nullable=False, default="zerodha")
     status: Mapped[str] = mapped_column(Text, nullable=False)
-    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # NEVER returned via any API response
+    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet ciphertext; NEVER returned via any API response
     kite_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     connected_at: Mapped[datetime | None] = mapped_column(nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(nullable=True)

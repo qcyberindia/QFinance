@@ -77,7 +77,14 @@ export interface Comment {
 }
 export interface CommentListResponse { items: Comment[]; page: number; page_size: number; total: number }
 
-export interface BookmarkItem { post_id: string; post_summary: string; bookmarked_at: string }
+export interface BookmarkItem {
+  post_id: string;
+  post_summary: string;
+  bookmarked_at: string;
+  /** null when the post is no longer available (removed/restricted). */
+  post_type: Post["post_type"] | null;
+  available: boolean;
+}
 export interface BookmarkListResponse { items: BookmarkItem[]; page: number; page_size: number; total: number }
 
 export const COMMUNITY_CHANNELS = [
@@ -138,25 +145,57 @@ export interface ResearchFull {
   updated_at: string;
 }
 
-// ---- Portfolio ----
+// ---- Portfolio (read-only, Zerodha) ----
+// Mirrors portfolio/schemas.py. Every number is the broker's own value or
+// arithmetic on it; `null` means "not available" — never an estimate.
 export interface Holding {
   trading_symbol: string;
+  exchange: string | null;
+  isin: string | null;
   quantity: number;
-  average_price: number;
+  t1_quantity: number;
+  average_price: number | null;
+  last_price: number | null;
+  close_price: number | null;
+  invested_value: number | null;
+  current_value: number | null;
+  pnl: number | null;
+  pnl_percent: number | null;
+  day_change_value: number | null;
+  day_change_percent: number | null;
+  allocation_percent: number | null;
+}
+export interface Position {
+  trading_symbol: string;
+  exchange: string | null;
+  product: string | null;
+  quantity: number;
+  average_price: number | null;
   last_price: number | null;
   pnl: number | null;
-  exchange: string | null;
+}
+export interface PortfolioSummary {
+  holdings_count: number;
+  invested_value: number | null;
+  current_value: number | null;
+  pnl: number | null;
+  pnl_percent: number | null;
+  day_change_value: number | null;
+  day_change_percent: number | null;
+  top_holding_percent: number | null;
+  top_five_percent: number | null;
 }
 export interface PortfolioResponse {
   holdings: Holding[];
-  positions: Holding[];
+  positions: Position[];
+  summary: PortfolioSummary;
   last_synced_at: string;
   read_only_notice: string;
 }
 export interface ConnectResponse { login_url: string }
 export interface ConnectionStatusResponse {
   broker: string;
-  status: "connected" | "disconnected" | "error";
+  status: "connected" | "disconnected" | "error" | "not_connected";
   connected_at: string | null;
   last_synced_at: string | null;
 }
@@ -224,10 +263,26 @@ export interface PublicPostSummary { id: string; post_type: string; content: str
 export interface PublicProfile {
   username: string;
   bio: string | null;
+  joined_at: string | null;
   published_posts_count: number;
   published_theses_count: number;
   contribution_points: number;
   recent_posts: PublicPostSummary[];
+}
+
+/** GET/PATCH /users/me/profile — the member's own profile. `name` and
+ * `email` are private account fields, never part of the public profile. */
+export interface MyProfile {
+  username: string;
+  bio: string | null;
+  experience_level: "beginner" | "intermediate" | "advanced" | null;
+  name: string;
+  email: string;
+  email_verified: boolean;
+  joined_at: string;
+  published_posts_count: number;
+  published_theses_count: number;
+  contribution_points: number;
 }
 
 // ---- Q-Points (GET /credits/me) ----

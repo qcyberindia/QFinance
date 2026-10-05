@@ -8,31 +8,61 @@ requirement structurally, not by a convention that could be forgotten.
 
 WRITTEN, NOT EXECUTED.
 """
-from fastapi import APIRouter, Depends, Query
+import re
+
+from fastapi import APIRouter, Cookie, Depends
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.deps import require_csrf, require_verified_email
 from app.modules.auth.models import User
-from app.modules.portfolio import service
-from app.modules.portfolio.schemas import ConnectionStatusResponse, ConnectResponse, PortfolioResponse
+from app.core.errors import QFinanceAPIError
+from app.modules.portfolio import oauth_state, service
+from app.modules.portfolio.schemas import (
+    ConnectionInfoResponse, ConnectionStatusResponse, ConnectResponse, PortfolioResponse,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
 @router.get("/zerodha/connect", response_model=ConnectResponse)
-async def zerodha_connect(user: User = Depends(require_verified_email)):
-    login_url = await service.get_login_url()
-    return ConnectResponse(login_url=login_url)
+async def zerodha_connect(
+    user: User = Depends(require_verified_email),
+    qf_session: str = Cookie(default="", alias="qf_session"),
+):
+    """Issues a single-use OAuth state bound to this user + session and
+    returns Kite's login URL carrying it (oauth_state.py)."""
+    state = await oauth_state.create_state(user_id=user.id, session_token=qf_session)
+    return ConnectResponse(login_url=await service.get_login_url(state=state))
 
 
-@router.get("/zerodha/callback", response_model=ConnectionStatusResponse)
+_REQUEST_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{1,128}$")
+_CALLBACK_REJECTED = "This Zerodha login link is invalid or has expired. Please connect again."
+
+
+class ZerodhaCallbackRequest(BaseModel):
+    # Plain strings, validated below: a schema-level pattern would make
+    # FastAPI's 422 response echo the rejected value back to the client.
+    request_token: str = ""
+    state: str = ""
+
+
+@router.post("/zerodha/callback", response_model=ConnectionStatusResponse, dependencies=[Depends(require_csrf)])
 async def zerodha_callback(
-    request_token: str = Query(...),
+    body: ZerodhaCallbackRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_verified_email),
+    qf_session: str = Cookie(default="", alias="qf_session"),
 ):
-    connection = await service.complete_connection(db, user_id=user.id, request_token=request_token)
+    """Completes a Zerodha login. POST with a JSON body, so the one-time
+    request_token never appears in a URL the API server logs. The OAuth
+    state is checked (and consumed) BEFORE the token is sent to Kite."""
+    if not await oauth_state.consume_state(state=body.state, user_id=user.id, session_token=qf_session):
+        raise QFinanceAPIError("BROKER_STATE_INVALID", _CALLBACK_REJECTED, 400)
+    if not _REQUEST_TOKEN_RE.match(body.request_token):
+        raise QFinanceAPIError("BROKER_AUTH_FAILED", "Failed to connect your Zerodha account. Please try again.", 400)
+    connection = await service.complete_connection(db, user_id=user.id, request_token=body.request_token)
     return ConnectionStatusResponse(
         broker=connection.broker, status=connection.status,
         connected_at=connection.connected_at, last_synced_at=connection.last_synced_at,
@@ -42,6 +72,19 @@ async def zerodha_callback(
 @router.delete("/zerodha", status_code=204, dependencies=[Depends(require_csrf)])
 async def zerodha_disconnect(db: AsyncSession = Depends(get_db), user: User = Depends(require_verified_email)):
     await service.disconnect(db, user_id=user.id)
+
+
+@router.get("/connection", response_model=ConnectionInfoResponse)
+async def get_connection_info(db: AsyncSession = Depends(get_db), user: User = Depends(require_verified_email)):
+    """The caller's own connection state (never the token or broker account
+    id) — lets the UI show connected / needs-reconnect without calling Kite."""
+    connection = await service.get_connection(db, user_id=user.id)
+    if connection is None:
+        return ConnectionInfoResponse(broker="zerodha", status="not_connected", connected_at=None, last_synced_at=None)
+    return ConnectionInfoResponse(
+        broker=connection.broker, status=connection.status,
+        connected_at=connection.connected_at, last_synced_at=connection.last_synced_at,
+    )
 
 
 @router.get("", response_model=PortfolioResponse)

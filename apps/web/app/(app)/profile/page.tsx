@@ -1,93 +1,121 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useSession } from "@/lib/session";
-import { api, ApiError } from "@/lib/api-client";
-import type { PublicProfile } from "@/lib/types";
-import { Card, ErrorState, LoadingState } from "@/components/states";
-import { AiConnectionSettings } from "@/components/ai-connection-settings";
+import Link from "next/link";
+import { api } from "@/lib/api-client";
+import type { MyProfile, PublicProfile } from "@/lib/types";
+import { ErrorState } from "@/components/states";
+import s from "@/components/profile/profile.module.css";
 
-export default function ProfilePage() {
-  const { session } = useSession();
-  const [profile, setProfile] = useState<PublicProfile | null>(null);
+const EXPERIENCE: Record<string, string> = { beginner: "Beginner", intermediate: "Intermediate", advanced: "Advanced" };
+const dateFmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) : "—");
+
+/**
+ * Overview — what other members see (public profile, GET /profile/{username})
+ * kept visibly separate from private account details only the member sees
+ * (GET /users/me/profile). Includes the account summary: Q-Points are the
+ * only "balance" in Qfinera and have no monetary value.
+ */
+export default function ProfileOverviewPage() {
+  const [me, setMe] = useState<MyProfile | null>(null);
+  const [pub, setPub] = useState<PublicProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!session?.username) return;
     setError(null);
     try {
-      // Real endpoint: GET /profile/{username} (API Spec V2 §6), public/read-only.
-      // Never returns journal/drafts/broker/portfolio data — those fields
-      // don't exist on this response at all.
-      const data = await api.get<PublicProfile>(`/profile/${session.username}`);
-      setProfile(data);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not load your profile.");
+      const mine = await api.get<MyProfile>("/users/me/profile");
+      setMe(mine);
+      setPub(await api.get<PublicProfile>(`/profile/${encodeURIComponent(mine.username)}`));
+    } catch {
+      setError("We couldn't load your profile. Try again.");
     }
-  }, [session?.username]);
+  }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
+
+  if (error) return <div className="mt-4"><ErrorState message={error} onRetry={load} /></div>;
+  if (!me || !pub) {
+    return (
+      <div aria-busy="true" aria-label="Loading profile" className="mt-4 space-y-3">
+        <div className="qf-skeleton" style={{ height: 72, width: "100%" }} />
+        <div className="qf-skeleton" style={{ height: 120, width: "100%" }} />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="font-display text-2xl">Profile</h1>
-        <p className="text-sm text-ink-soft">Your public identity in the community.</p>
-      </div>
+    <>
+      <section className={s.section} aria-labelledby="public-title">
+        <div className={s.sectionHead}>
+          <h2 id="public-title" className="qf-section-title">Public profile</h2>
+          <span className={s.privateTag}>Visible to other members</span>
+        </div>
+        {pub.bio ? <p className="qf-body">{pub.bio}</p> : (
+          <p className="qf-secondary">No bio yet. <Link href="/profile/edit" className="underline">Add one</Link> so others know what you research.</p>
+        )}
+        <div className={`${s.stats} mt-4`}>
+          <div className={s.stat}><div className={s.statValue}>{pub.published_posts_count}</div><div className={s.statLabel}>Posts</div></div>
+          <div className={s.stat}><div className={s.statValue}>{pub.published_theses_count}</div><div className={s.statLabel}>Theses</div></div>
+          <div className={s.stat}><div className={s.statValue}>{pub.contribution_points}</div><div className={s.statLabel}>Q-Points</div></div>
+        </div>
+        <p className="qf-secondary mt-3" style={{ fontSize: 12.5 }}>
+          Joined {dateFmt(pub.joined_at)}. Other members see your username, bio, activity and Q-Points — never your
+          name, email, portfolio or private research.
+        </p>
+      </section>
 
-      {error && <ErrorState message={error} onRetry={load} />}
-      {!error && profile === null && <LoadingState label="Loading profile…" />}
+      <section className={s.section} aria-labelledby="account-title">
+        <div className={s.sectionHead}>
+          <h2 id="account-title" className="qf-section-title">Private account details</h2>
+          <span className={s.privateTag}>Only you can see this</span>
+        </div>
+        <dl className={s.facts}>
+          <dt>Name</dt><dd>{me.name}</dd>
+          <dt>Email</dt><dd>{me.email} {me.email_verified ? <span className="qf-secondary">· verified</span> : <span style={{ color: "var(--down)" }}>· not verified</span>}</dd>
+          <dt>Experience</dt><dd>{me.experience_level ? EXPERIENCE[me.experience_level] : <span className="qf-secondary">Not set</span>}</dd>
+          <dt>Member since</dt><dd>{dateFmt(me.joined_at)}</dd>
+        </dl>
+        <Link href="/profile/edit" className="qf-btn-ghost mt-4" style={{ textDecoration: "none" }}>Edit profile</Link>
+      </section>
 
-      {!error && profile && (
-        <>
-          <Card>
-            <div className="font-display text-xl">@{profile.username}</div>
-            <div className="text-sm text-ink-soft">Qfinera community identity — your real name is never shown here.</div>
-            {profile.bio && <p className="text-sm mt-3">{profile.bio}</p>}
-          </Card>
+      <section className={s.section} aria-labelledby="summary-title">
+        <div className={s.sectionHead}>
+          <h2 id="summary-title" className="qf-section-title">Account summary</h2>
+        </div>
+        <dl className={s.facts}>
+          <dt>Q-Points</dt><dd><strong>{me.contribution_points}</strong> <Link href="/profile/q-points" className="underline qf-secondary">History</Link></dd>
+          <dt>Monetary balance</dt><dd>None — Qfinera has no wallet, no withdrawable funds and no paid plans.</dd>
+        </dl>
+        <p className="qf-secondary mt-3" style={{ fontSize: 12.5 }}>
+          Q-Points reflect your contribution and reputation in Qfinera. They have no monetary value.
+        </p>
+      </section>
 
-          <div className="grid grid-cols-3 gap-3">
-            <Card className="text-center">
-              <div className="font-display text-2xl">{profile.published_posts_count}</div>
-              <div className="text-xs text-ink-soft uppercase tracking-wide mt-1">Posts</div>
-            </Card>
-            <Card className="text-center">
-              <div className="font-display text-2xl">{profile.published_theses_count}</div>
-              <div className="text-xs text-ink-soft uppercase tracking-wide mt-1">Theses</div>
-            </Card>
-            <Card className="text-center">
-              <div className="font-display text-2xl">{profile.contribution_points}</div>
-              <div className="text-xs text-ink-soft uppercase tracking-wide mt-1">Q-Points</div>
-            </Card>
-          </div>
-
-          <div>
-            <h2 className="font-display text-lg mb-3">Settings</h2>
-            <AiConnectionSettings />
-          </div>
-
-          <div>
-            <h2 className="font-display text-lg mb-3">Recent activity</h2>
-            {profile.recent_posts.length === 0 ? (
-              <p className="text-sm text-ink-soft">No public posts yet.</p>
-            ) : (
-              <div className="space-y-3">
-                {profile.recent_posts.map((p) => (
-                  <Card key={p.id}>
-                    <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--brass)" }}>
-                      {p.post_type}
-                    </span>
-                    <p className="text-sm mt-1 whitespace-pre-wrap">{p.content}</p>
-                    <p className="text-xs text-ink-soft mt-2">{new Date(p.created_at).toLocaleDateString()}</p>
-                  </Card>
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+      <section className={s.section} aria-labelledby="activity-title">
+        <div className={s.sectionHead}>
+          <h2 id="activity-title" className="qf-section-title">Recent public activity</h2>
+        </div>
+        {pub.recent_posts.length === 0 ? (
+          <p className="qf-secondary">No public posts yet. <Link href="/community" className="underline">Visit Community</Link></p>
+        ) : (
+          <ul className={s.list}>
+            {pub.recent_posts.map((p) => (
+              <li key={p.id} className={s.item}>
+                <div className={s.itemBody}>
+                  <span className={`${s.typeTag} ${p.post_type === "thesis" ? s.typeThesis : p.post_type === "question" ? s.typeQuestion : ""}`}>
+                    {p.post_type === "question" ? "Question" : p.post_type === "thesis" ? "Thesis" : "Discussion"}
+                  </span>
+                  <Link href={`/community/${p.id}`} className={`${s.itemTitle} block mt-1`}>
+                    {p.content.length > 160 ? `${p.content.slice(0, 160)}…` : p.content}
+                  </Link>
+                  <div className={s.itemMeta}>{dateFmt(p.created_at)}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
   );
 }

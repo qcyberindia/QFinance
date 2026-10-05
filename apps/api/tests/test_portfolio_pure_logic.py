@@ -96,10 +96,12 @@ def test_valid_connection_statuses_matches_db_check_constraint():
 # parameter at all), genuinely unit-testable end-to-end
 # ---------------------------------------------------------------------------
 
-async def test_get_login_url_returns_the_adapters_url():
+async def test_get_login_url_returns_the_adapters_url_with_state():
+    """The adapter's URL plus the OAuth state in Kite's redirect_params
+    (URL-encoded `state=<value>`, which Kite sends back on the redirect)."""
     fake = FakeBrokerAdapter(login_url="https://kite.zerodha.com/connect/login?v=3&api_key=fake")
-    url = await service.get_login_url(adapter=fake)
-    assert url == "https://kite.zerodha.com/connect/login?v=3&api_key=fake"
+    url = await service.get_login_url(state="abc_123-XYZ", adapter=fake)
+    assert url == "https://kite.zerodha.com/connect/login?v=3&api_key=fake&redirect_params=state%3Dabc_123-XYZ"
 
 
 async def test_get_login_url_translates_not_configured_to_503():
@@ -108,7 +110,7 @@ async def test_get_login_url_translates_not_configured_to_503():
     against the real service.py function, not just read."""
     fake = FakeBrokerAdapter(raise_not_configured=True)
     with pytest.raises(QFinanceAPIError) as exc_info:
-        await service.get_login_url(adapter=fake)
+        await service.get_login_url(state="s", adapter=fake)
     assert exc_info.value.code == "BROKER_NOT_CONFIGURED"
     assert exc_info.value.status_code == 503
 

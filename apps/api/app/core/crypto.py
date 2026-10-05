@@ -83,3 +83,51 @@ def decrypt_secret(ciphertext: str) -> str:
         raise DecryptionError(
             "Could not decrypt the stored value with the configured encryption secret."
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Broker access tokens — a dedicated key, fully separate from AI provider keys.
+#
+# Encrypt/decrypt with BROKER_TOKEN_ENCRYPTION_SECRET only. If it is unset,
+# broker operations fail cleanly (EncryptionNotConfiguredError) — they never
+# fall back to the AI key for new data.
+#
+# Legacy read path: broker tokens written before this split were encrypted
+# with AI_KEY_ENCRYPTION_SECRET. `decrypt_broker_token` reports when it had to
+# use that legacy key so the caller can immediately re-encrypt under the
+# broker key; it is never used to encrypt. The AI-key functions above are
+# unchanged.
+# ---------------------------------------------------------------------------
+
+def _derive_fernet(secret: str | None) -> Fernet | None:
+    if not secret or not secret.strip():
+        return None
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest()))
+
+
+def _broker_fernet() -> Fernet:
+    fernet = _derive_fernet(settings.BROKER_TOKEN_ENCRYPTION_SECRET)
+    if fernet is None:
+        raise EncryptionNotConfiguredError("BROKER_TOKEN_ENCRYPTION_SECRET is not configured.")
+    return fernet
+
+
+def encrypt_broker_token(plaintext: str) -> str:
+    return _broker_fernet().encrypt(plaintext.encode("utf-8")).decode("ascii")
+
+
+def decrypt_broker_token(ciphertext: str) -> tuple[str, bool]:
+    """Returns (plaintext, used_legacy_key). Raises DecryptionError if
+    neither the broker key nor the legacy AI key can decrypt the value."""
+    data = ciphertext.encode("ascii")
+    try:
+        return _broker_fernet().decrypt(data).decode("utf-8"), False
+    except InvalidToken:
+        pass
+    legacy = _derive_fernet(settings.AI_KEY_ENCRYPTION_SECRET)
+    if legacy is not None:
+        try:
+            return legacy.decrypt(data).decode("utf-8"), True
+        except InvalidToken:
+            pass
+    raise DecryptionError("Could not decrypt the stored broker token.")

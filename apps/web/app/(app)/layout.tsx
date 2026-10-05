@@ -25,9 +25,9 @@ const PRIMARY_NAV = [
   { href: "/journal", label: "Journal" },
 ];
 
+// Profile is the personal control center (Overview, Edit, Saved, Q-Points,
+// Settings live inside it), so it is the single secondary entry.
 const SECONDARY_NAV = [
-  { href: "/saved", label: "Saved" },
-  { href: "/credits", label: "Q-Points" },
   { href: "/profile", label: "Profile" },
 ];
 
@@ -120,9 +120,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         style={{ borderColor: "var(--line)", background: "var(--cream-1)" }}
       >
         <div className="font-display text-lg">Qfinera</div>
-        <button className="qf-btn-ghost text-xs" onClick={() => logout().then(() => router.replace("/login"))}>
-          Log out
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/profile"
+            aria-current={isActive("/profile") ? "page" : undefined}
+            className="qf-btn-ghost text-xs"
+            style={{ minHeight: 44, textDecoration: "none", color: isActive("/profile") ? "var(--brass-dark)" : undefined }}
+          >
+            Profile
+          </Link>
+          <button className="qf-btn-ghost text-xs" style={{ minHeight: 44 }} onClick={() => logout().then(() => router.replace("/login"))}>
+            Log out
+          </button>
+        </div>
       </div>
 
       <main className="flex-1 min-w-0">
@@ -139,8 +149,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Mobile bottom nav — the 4 PRIMARY items only (not an arbitrary
-            slice of a combined list); Saved/Credits/Profile remain one tap
-            away via the top-bar's own route, not crammed in here. Each
+            slice of a combined list); the Profile control center (Saved,
+            Q-Points, Settings) is one tap away via the top bar's Profile link. Each
             target is >=44px tall including padding, per the accessibility
             requirement. */}
         <nav

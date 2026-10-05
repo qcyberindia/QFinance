@@ -21,6 +21,7 @@ class PublicProfileResponse(BaseModel):
     `username` is the public, pseudonymous identity."""
     username: str
     bio: str | None
+    joined_at: datetime | None = None
     published_posts_count: int
     published_theses_count: int
     contribution_points: int

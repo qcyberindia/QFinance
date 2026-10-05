@@ -29,30 +29,14 @@ async def get_public_profile(db: AsyncSession, *, username: str) -> dict:
     pseudonym GENERATION, which would need its own schema/UX decision and is
     out of scope for this fix — see work_memory.md)."""
     profile_row = (await db.execute(
-        text("SELECT user_id, bio FROM profiles WHERE username = :username"),
+        text("SELECT user_id, bio, created_at FROM profiles WHERE username = :username"),
         {"username": username},
     )).first()
     if profile_row is None:
         raise NotFound("Profile not found.")
 
     user_id = profile_row.user_id
-
-    # Only 'visible' posts count publicly — matches the same moderation-status
-    # visibility rule community/service.py's _visible_to applies everywhere
-    # else, so a restricted/removed post never inflates a public count or
-    # appears in the recent-posts list.
-    published_posts_count = (await db.execute(
-        text("SELECT COUNT(*) FROM posts WHERE author_id = :uid AND status = 'visible'"),
-        {"uid": str(user_id)},
-    )).scalar_one()
-    published_theses_count = (await db.execute(
-        text("SELECT COUNT(*) FROM posts WHERE author_id = :uid AND status = 'visible' AND post_type = 'thesis'"),
-        {"uid": str(user_id)},
-    )).scalar_one()
-    contribution_points = (await db.execute(
-        text("SELECT COALESCE(SUM(points), 0) FROM contributions WHERE user_id = :uid"),
-        {"uid": str(user_id)},
-    )).scalar_one()
+    activity = await get_activity_summary(db, user_id=user_id)
     recent_rows = (await db.execute(
         text(
             "SELECT id, post_type, content, created_at FROM posts "
@@ -65,11 +49,34 @@ async def get_public_profile(db: AsyncSession, *, username: str) -> dict:
     return {
         "username": username,
         "bio": profile_row.bio,
-        "published_posts_count": published_posts_count,
-        "published_theses_count": published_theses_count,
-        "contribution_points": int(contribution_points),
+        "joined_at": profile_row.created_at,
+        **activity,
         "recent_posts": [
             {"id": str(r.id), "post_type": r.post_type, "content": r.content, "created_at": r.created_at}
             for r in recent_rows
         ],
+    }
+
+
+async def get_activity_summary(db: AsyncSession, *, user_id) -> dict:
+    """Public-safe activity counts for one member — shared by the public
+    profile (P.1) and the member's own profile (users/service.py). Only
+    'visible' posts count, matching community/service.py's _visible_to, so
+    restricted/removed posts never inflate a count."""
+    published_posts_count = (await db.execute(
+        text("SELECT COUNT(*) FROM posts WHERE author_id = :uid AND status = 'visible'"),
+        {"uid": str(user_id)},
+    )).scalar_one()
+    published_theses_count = (await db.execute(
+        text("SELECT COUNT(*) FROM posts WHERE author_id = :uid AND status = 'visible' AND post_type = 'thesis'"),
+        {"uid": str(user_id)},
+    )).scalar_one()
+    contribution_points = (await db.execute(
+        text("SELECT COALESCE(SUM(points), 0) FROM contributions WHERE user_id = :uid"),
+        {"uid": str(user_id)},
+    )).scalar_one()
+    return {
+        "published_posts_count": int(published_posts_count),
+        "published_theses_count": int(published_theses_count),
+        "contribution_points": int(contribution_points),
     }

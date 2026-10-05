@@ -127,6 +127,8 @@ class BookmarkItem(BaseModel):
     post_id: str
     post_summary: str
     bookmarked_at: datetime
+    post_type: str | None = None  # None when the post is no longer available
+    available: bool = True
 
 
 class BookmarkListResponse(BaseModel):

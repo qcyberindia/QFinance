@@ -783,5 +783,8 @@ async def list_bookmarks(db: AsyncSession, *, actor_id: uuid.UUID, page: int, pa
         # A removed/restricted post's text must not resurface through Saved.
         visible = post is not None and _visible_to(post, viewer_id=actor_id, is_staff=False)
         summary = post.content[:140] if visible else "This post is no longer available."
-        items.append({"post_id": str(b.post_id), "post_summary": summary, "bookmarked_at": b.created_at})
+        items.append({
+            "post_id": str(b.post_id), "post_summary": summary, "bookmarked_at": b.created_at,
+            "post_type": post.post_type if visible else None, "available": visible,
+        })
     return items, total

@@ -28,6 +28,12 @@ class BrokerConnectionError(Exception):
     provider failure" (raised)."""
 
 
+class BrokerSessionExpiredError(BrokerConnectionError):
+    """The stored broker session is no longer valid (Kite access tokens
+    expire daily, or the member revoked access). The member must reconnect;
+    retrying with the same token cannot succeed."""
+
+
 class BrokerNotConfiguredError(Exception):
     """Raised when ZERODHA_API_KEY/ZERODHA_API_SECRET are unset. Callers
     (portfolio/service.py) convert this into the PF.1-documented

@@ -21,7 +21,7 @@ import logging
 from typing import Any
 
 from app.core.config import get_settings
-from app.integrations.brokers.base import BrokerConnectionError, BrokerNotConfiguredError
+from app.integrations.brokers.base import BrokerConnectionError, BrokerNotConfiguredError, BrokerSessionExpiredError
 
 settings = get_settings()
 logger = logging.getLogger("qfinance.broker.zerodha")
@@ -48,6 +48,19 @@ def _get_kite_client(*, access_token: str | None = None):
     if access_token:
         kite.set_access_token(access_token)
     return kite
+
+
+def _raise_broker_error(e: Exception, message: str):
+    """Kite signals an invalid/expired session with `TokenException` (access
+    tokens expire daily). That case needs a reconnect, so it is surfaced as
+    BrokerSessionExpiredError; anything else is a generic broker failure."""
+    try:
+        from kiteconnect.exceptions import TokenException
+    except ImportError:  # SDK absent — cannot be a Kite token error
+        TokenException = ()  # type: ignore[assignment]
+    if TokenException and isinstance(e, TokenException):
+        raise BrokerSessionExpiredError("The Zerodha session has expired.") from e
+    raise BrokerConnectionError(message) from e
 
 
 class ZerodhaAdapter:
@@ -86,7 +99,7 @@ class ZerodhaAdapter:
             return kite.holdings()
         except Exception as e:  # noqa: BLE001 — see exchange_request_token's comment
             logger.warning("Zerodha holdings fetch failed: %s", type(e).__name__)
-            raise BrokerConnectionError("Failed to fetch holdings from Zerodha.") from e
+            _raise_broker_error(e, "Failed to fetch holdings from Zerodha.")
 
     def fetch_positions(self, *, access_token: str) -> list[dict[str, Any]]:
         _require_configured()
@@ -95,7 +108,7 @@ class ZerodhaAdapter:
             positions = kite.positions()
         except Exception as e:  # noqa: BLE001
             logger.warning("Zerodha positions fetch failed: %s", type(e).__name__)
-            raise BrokerConnectionError("Failed to fetch positions from Zerodha.") from e
+            _raise_broker_error(e, "Failed to fetch positions from Zerodha.")
         # Kite's positions() returns {"net": [...], "day": [...]} — "net" is
         # the member's actual current position set; "day" is intraday-only
         # and not meaningful for a buy-and-hold investor workspace like this

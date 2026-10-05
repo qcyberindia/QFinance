@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # acceptable for MVP/dev, NOT for any real deployment, which must set a fixed,
     # persisted secret via environment variable).
     AI_KEY_ENCRYPTION_SECRET: str | None = None
+    # Encrypts stored broker (Zerodha) access tokens — separate from AI keys.
+    # Required to connect a broker. Tokens written before this key existed
+    # (under AI_KEY_ENCRYPTION_SECRET) are still read once and re-encrypted
+    # under this key (see app/core/crypto.py). Never logged.
+    BROKER_TOKEN_ENCRYPTION_SECRET: str | None = None
 
 
 @lru_cache

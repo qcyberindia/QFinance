@@ -44,7 +44,9 @@ def test_public_profile_response_schema_has_no_forbidden_fields():
 
 
 def test_public_profile_response_schema_only_has_expected_public_fields():
-    allowed = {"username", "bio", "published_posts_count", "published_theses_count",
+    # `joined_at` added deliberately (Profile Control Center): a public join
+    # date, not identity — name/email/portfolio remain excluded.
+    allowed = {"username", "bio", "joined_at", "published_posts_count", "published_theses_count",
                "contribution_points", "recent_posts"}
     field_names = set(PublicProfileResponse.model_fields.keys())
     assert field_names == allowed, (
@@ -98,6 +100,7 @@ class _FakeDB:
             # ever reintroduced.
             fake_row = SimpleNamespace(
                 user_id=uuid.uuid4(), bio="Long-term investor.", name="Priya Sharma (REAL NAME)",
+                created_at=datetime.now(timezone.utc),
             )
             return _FakeResult(first=fake_row)
         if self._call_index in (2, 3):
