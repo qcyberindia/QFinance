@@ -44,7 +44,7 @@ export function ThesisCard({
     <div className="qf-card p-6 space-y-4" style={{ borderColor: "var(--brass)" }}>
       <div>
         <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--brass)" }}>
-          Why I Own This
+          Investment Thesis
         </div>
         <h2 className="font-display text-2xl mt-1">{companyName}</h2>
         {title && <p className="text-sm text-ink-soft mt-0.5">{title}</p>}

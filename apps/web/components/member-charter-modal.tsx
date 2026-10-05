@@ -38,9 +38,12 @@ export function MemberCharterModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: "rgba(43,38,33,.45)" }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="charter-title"
     >
       <div className="qf-card w-full max-w-md p-6">
-        <h2 className="font-display text-xl mb-1">Member Charter</h2>
+        <h2 id="charter-title" className="font-display text-xl mb-1">Member Charter</h2>
         <p className="text-sm text-ink-soft mb-4">
           Before you post for the first time, please read and acknowledge the community's ground rules.
         </p>

@@ -31,7 +31,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -123,15 +123,129 @@ async def _post_counts(db: AsyncSession, post_id: uuid.UUID) -> tuple[int, int]:
     return reaction_count, comment_count
 
 
-async def serialize_post(db: AsyncSession, post: Post) -> dict:
+async def _thesis_ref(db: AsyncSession, research_id: uuid.UUID) -> dict | None:
+    """Small public reference for a thesis post's linked research — only
+    when that research is currently published and not moderated. Company
+    data is public/static; no author or draft fields are read here."""
+    row = (await db.execute(
+        text(
+            "SELECT r.title, r.status, r.moderation_status, r.current_version, r.published_at, "
+            "c.name AS company_name, c.symbol AS company_symbol, c.exchange AS company_exchange "
+            "FROM research r LEFT JOIN companies c ON c.id = r.company_id WHERE r.id = :rid"
+        ),
+        {"rid": str(research_id)},
+    )).first()
+    if row is None or row.status != "published" or row.moderation_status != "active":
+        return None
+    return {
+        "research_title": row.title, "version": row.current_version, "published_at": row.published_at,
+        "company": {"name": row.company_name, "symbol": row.company_symbol, "exchange": row.company_exchange},
+    }
+
+
+async def _viewer_flags(db: AsyncSession, post_id: uuid.UUID, viewer_id: uuid.UUID | None) -> tuple[bool, bool]:
+    if viewer_id is None:
+        return False, False
+    reacted = (await db.execute(
+        text("SELECT 1 FROM reactions WHERE target_type = 'post' AND target_id = :pid AND user_id = :uid LIMIT 1"),
+        {"pid": str(post_id), "uid": str(viewer_id)},
+    )).first() is not None
+    bookmarked = (await db.execute(
+        text("SELECT 1 FROM bookmarks WHERE post_id = :pid AND user_id = :uid LIMIT 1"),
+        {"pid": str(post_id), "uid": str(viewer_id)},
+    )).first() is not None
+    return reacted, bookmarked
+
+
+async def serialize_post(db: AsyncSession, post: Post, *, viewer_id: uuid.UUID | None = None) -> dict:
     author = await _load_author(db, post.author_id)
     reaction_count, comment_count = await _post_counts(db, post.id)
+    viewer_reacted, viewer_bookmarked = await _viewer_flags(db, post.id, viewer_id)
+    thesis = await _thesis_ref(db, post.research_id) if post.post_type == "thesis" and post.research_id else None
     return {
         "id": str(post.id), "channel": post.channel, "research_id": str(post.research_id) if post.research_id else None,
         "post_type": post.post_type, "author": author, "content": post.content,
         "created_at": post.created_at, "updated_at": post.updated_at,
         "is_edited": post.is_edited, "status": post.status,
         "reaction_count": reaction_count, "comment_count": comment_count,
+        "viewer_reacted": viewer_reacted, "viewer_bookmarked": viewer_bookmarked,
+        "thesis": thesis,
+    }
+
+
+# Community pillars -> post_type values. 'general' is the legacy default
+# type and reads as a discussion.
+PILLAR_POST_TYPES = {
+    "discussion": ("general", "discussion"),
+    "question": ("question",),
+    "thesis": ("thesis",),
+}
+
+
+async def list_feed(db: AsyncSession, *, pillar: str | None, page: int, page_size: int,
+                    viewer_id: uuid.UUID | None) -> tuple[list[dict], int]:
+    """One feed across the Community pillars. Channel posts (except
+    staff-only announcements) plus thesis posts, which live on
+    `posts.research_id` with `channel=NULL` (Architecture V2 §5) and so are
+    unreachable through any channel listing. Plain research-discussion posts
+    (research-linked, not thesis) stay on their research item, not the feed.
+    Visible posts only."""
+    if pillar is not None and pillar not in PILLAR_POST_TYPES:
+        raise QFinanceAPIError("INVALID_PILLAR", f"pillar must be one of {tuple(PILLAR_POST_TYPES)}.", 400)
+    conditions = [
+        Post.status == "visible",
+        or_(and_(Post.channel.is_not(None), Post.channel != "announcements"), Post.post_type == "thesis"),
+    ]
+    if pillar is not None:
+        conditions.append(Post.post_type.in_(PILLAR_POST_TYPES[pillar]))
+    total = (await db.execute(select(func.count()).select_from(Post).where(*conditions))).scalar_one()
+    rows = (await db.execute(
+        select(Post).where(*conditions)
+        .order_by(Post.created_at.desc(), Post.id.desc()).offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
+    return [await serialize_post(db, p, viewer_id=viewer_id) for p in rows], total
+
+
+# Published-snapshot fields a thesis post may show. An explicit allow-list:
+# anything not named here (including fields added to snapshots later) is
+# never exposed through Community.
+THESIS_SNAPSHOT_FIELDS = (
+    "title", "summary", "business_model", "business_quality", "competitive_position", "financial_snapshot",
+    "catalysts", "management_notes", "assumptions_outlook", "valuation_range",
+    "bull_case", "base_case", "bear_case", "risk_register", "invalidation_conditions",
+    "conflict_disclosed", "conflict_detail", "position_disclosed", "position_detail", "research_date",
+)
+
+
+async def get_thesis_snapshot(db: AsyncSession, *, post: Post) -> dict:
+    """The published reasoning behind a thesis post, read from the latest
+    immutable `research_versions` snapshot (written on every publish and
+    post-publish edit) — never from the live row, so unpublished draft text
+    can't reach Community."""
+    if post.post_type != "thesis" or post.research_id is None:
+        raise NotFound("This post has no linked thesis.")
+    ref = await _thesis_ref(db, post.research_id)
+    if ref is None:
+        raise NotFound("This thesis is no longer available.")
+    row = (await db.execute(
+        text(
+            "SELECT version_number, snapshot, created_at FROM research_versions "
+            "WHERE research_id = :rid ORDER BY version_number DESC LIMIT 1"
+        ),
+        {"rid": str(post.research_id)},
+    )).first()
+    if row is None:
+        raise NotFound("This thesis is no longer available.")
+    snap = row.snapshot or {}
+    sections = {f: snap.get(f) for f in THESIS_SNAPSHOT_FIELDS}
+    sources = [
+        {"label": s.get("label"), "reference": s.get("reference"), "supports_claim": s.get("supports_claim")}
+        for s in (snap.get("sources") or [])
+    ]
+    return {
+        "post_id": str(post.id), "company": ref["company"], "version": row.version_number,
+        "version_created_at": row.created_at, "published_at": ref["published_at"],
+        "sections": sections, "sources": sources,
     }
 
 
@@ -165,6 +279,12 @@ async def create_channel_post(db: AsyncSession, *, actor_id: uuid.UUID, channel:
     + MOD-003 flagged-phrase signal, both unchanged from V1."""
     validate_channel(channel)
     validate_post_type(post_type)
+    if post_type == "thesis":
+        # A thesis is published from Research (POST /research/{id}/publish-to-community),
+        # which links it to the author's published, versioned reasoning.
+        raise QFinanceAPIError(
+            "THESIS_REQUIRES_RESEARCH", "Publish a thesis from your Research instead of posting it directly.", 400,
+        )
     if not content or not content.strip():
         raise QFinanceAPIError("VALIDATION_ERROR", "Post content cannot be empty.", 400, fields={"content": "required"})
 
@@ -558,10 +678,10 @@ async def add_reaction(db: AsyncSession, *, actor_id: uuid.UUID, target_type: st
     target_author_id: uuid.UUID | None = None
     if target_type == "post":
         target = await db.get(Post, target_id)
-        target_author_id = target.author_id if target else None
-    elif target_type == "comment":
+    else:
         target = await db.get(Comment, target_id)
-        target_author_id = target.author_id if target else None
+    if target is not None and _visible_to(target, viewer_id=actor_id, is_staff=False):
+        target_author_id = target.author_id
     if target_author_id is None:
         raise NotFound(f"{target_type.capitalize()} not found.")
 
@@ -579,6 +699,10 @@ async def add_reaction(db: AsyncSession, *, actor_id: uuid.UUID, target_type: st
     db.add(reaction)
     # No event emitted — reactions are deliberately untracked in `events` (Architecture §21.2).
     await db.commit()
+    # Detach before the contribution hook: a duplicate-credit no-op rolls the
+    # session back, which would expire this already-committed object and
+    # crash the caller's `reaction.id` read (seen on unlike -> re-like).
+    db.expunge(reaction)
 
     # Architecture V2 §7 contribution hook. Deferred import (avoids a
     # module-load-time cross-import; `contributions` never imports `community`).
@@ -621,7 +745,8 @@ async def remove_reaction(db: AsyncSession, *, actor_id: uuid.UUID, target_type:
 # ---------------------------------------------------------------------------
 
 async def add_bookmark(db: AsyncSession, *, actor_id: uuid.UUID, post_id: uuid.UUID) -> Bookmark:
-    if await db.get(Post, post_id) is None:
+    post = await db.get(Post, post_id)
+    if post is None or not _visible_to(post, viewer_id=actor_id, is_staff=False):
         raise NotFound("Post not found.")
     existing = (await db.execute(
         select(Bookmark).where(Bookmark.user_id == actor_id, Bookmark.post_id == post_id)
@@ -655,6 +780,8 @@ async def list_bookmarks(db: AsyncSession, *, actor_id: uuid.UUID, page: int, pa
     items = []
     for b in rows:
         post = await db.get(Post, b.post_id)
-        summary = (post.content[:140] if post else "")
+        # A removed/restricted post's text must not resurface through Saved.
+        visible = post is not None and _visible_to(post, viewer_id=actor_id, is_staff=False)
+        summary = post.content[:140] if visible else "This post is no longer available."
         items.append({"post_id": str(b.post_id), "post_summary": summary, "bookmarked_at": b.created_at})
     return items, total

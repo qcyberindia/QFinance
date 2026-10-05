@@ -1,5 +1,5 @@
 """Integration-level tests for the research module — ownership, RBAC,
-versioning, publish/republish gates, sources, access_tier, and the audit/event
+versioning, publish/republish gates, sources, and the audit/event
 side effects that go with each.
 
 STATUS: WRITTEN. NOT EXECUTABLE IN CURRENT ENVIRONMENT — these require a real
@@ -162,53 +162,10 @@ async def test_published_edit_with_valid_change_creates_new_version(client, memb
     assert resp.json()["current_version"] == published_research.current_version + 1
 
 
-@pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")
-async def test_free_member_sees_preview_for_core_tier_published_research(client, free_member, published_research):
-    """LIB-003 — a 'core' access_tier item shows the paywalled preview shape
-    to a FREE caller, not the full field set."""
-    resp = await client.get(f"/api/v1/research/{published_research.id}", headers=free_member.auth_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body.get("preview") is True
-    assert "bear_case" not in body
-
-
-@pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")
-async def test_free_member_sees_full_content_for_free_example_tier(client, free_member, free_example_research):
-    """MEM-004 — a 'free_example' item bypasses the paywall entirely for a
-    FREE caller, per AD-18/Founder Decision #1."""
-    resp = await client.get(f"/api/v1/research/{free_example_research.id}", headers=free_member.auth_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body.get("preview") is not True
-    assert "bear_case" in body
-
-
-@pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")
-async def test_only_admin_can_set_access_tier(client, member_a, moderator_user, admin_user, published_research):
-    """AD-19/Founder Decision #2 — author, MODERATOR, and REVIEWER are all
-    explicitly excluded; only ADMIN/SUPER_ADMIN may call this."""
-    resp = await client.patch(f"/api/v1/research/{published_research.id}/access-tier",
-                               json={"access_tier": "free_example"}, headers=member_a.csrf_headers)
-    assert resp.status_code == 403  # author, not admin
-
-    resp = await client.patch(f"/api/v1/research/{published_research.id}/access-tier",
-                               json={"access_tier": "free_example"}, headers=moderator_user.csrf_headers)
-    assert resp.status_code == 403  # moderator excluded per AD-19
-
-    resp = await client.patch(f"/api/v1/research/{published_research.id}/access-tier",
-                               json={"access_tier": "free_example"}, headers=admin_user.csrf_headers)
-    assert resp.status_code == 200
-    # Assert exactly one audit_logs row with action_type='research.access_tier_changed' now exists.
-
-
-@pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")
-async def test_invalid_access_tier_value_rejected_before_write(client, admin_user, published_research, db_session):
-    resp = await client.patch(f"/api/v1/research/{published_research.id}/access-tier",
-                               json={"access_tier": "premium"}, headers=admin_user.csrf_headers)
-    assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "INVALID_ACCESS_TIER"
-    # Assert research.access_tier is unchanged and no audit_logs row was written.
+# Paid-tier tests (LIB-003 preview, MEM-004 free_example, AD-19 access-tier
+# endpoint) were removed: Qfinera is free, published research is fully
+# visible to members, and the access-tier endpoint no longer exists. The
+# replacement behavior is covered for real in test_free_product_rules.py.
 
 
 @pytest.mark.skip(reason="requires a real PostgreSQL test database — not available in this environment")

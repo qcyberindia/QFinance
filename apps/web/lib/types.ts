@@ -38,7 +38,30 @@ export interface Post {
   reaction_count: number;
   comment_count: number;
   rating?: RatingSummary;
+  /** Whether the signed-in viewer has liked / saved this post. */
+  viewer_reacted?: boolean;
+  viewer_bookmarked?: boolean;
+  /** Present on thesis posts while the linked research is published. */
+  thesis?: ThesisRef | null;
 }
+export interface ThesisCompanyRef { name: string | null; symbol: string | null; exchange: string | null }
+export interface ThesisRef {
+  research_title: string | null;
+  version: number;
+  published_at: string | null;
+  company: ThesisCompanyRef;
+}
+/** GET /community/posts/{id}/thesis — the published, versioned reasoning. */
+export interface ThesisSnapshot {
+  post_id: string;
+  company: ThesisCompanyRef;
+  version: number;
+  version_created_at: string;
+  published_at: string | null;
+  sections: Record<string, string | boolean | null>;
+  sources: { label: string | null; reference: string | null; supports_claim: string | null }[];
+}
+export type CommunityPillar = "discussion" | "question" | "thesis";
 export interface PostListResponse { items: Post[]; page: number; page_size: number; total: number }
 
 export interface Comment {
@@ -85,7 +108,6 @@ export interface ResearchFull {
   industry: string | null;
   status: "draft" | "published";
   moderation_status: string;
-  access_tier: string;
   title: string;
   summary: string;
   current_version: number;
@@ -174,19 +196,9 @@ export interface LibraryItem {
   tags: string[];
   source_count: number;
   current_version: number;
-  access_tier: string;
-  preview: false;
-}
-export interface LibraryPreviewItem {
-  preview: true;
-  id: string;
-  title: string;
-  author: AuthorRef;
-  summary: string;
-  access_tier: string;
 }
 export interface LibraryListResponse {
-  items: (LibraryItem | LibraryPreviewItem)[];
+  items: LibraryItem[];
   page: number;
   page_size: number;
   total: number;
@@ -218,11 +230,13 @@ export interface PublicProfile {
   recent_posts: PublicPostSummary[];
 }
 
-// ---- Credits / Q-Points (API Spec V2 §8) ----
-export interface CreditLedgerEntry { amount_paise: number; reason: string; created_at: string }
-export interface CreditsSummary {
-  balance_paise: number;
-  entries: CreditLedgerEntry[];
+// ---- Q-Points (GET /credits/me) ----
+// A reputation/contribution score only — never money: no currency, balance
+// or paise fields exist on these types.
+export interface QPointEntry { points: number; source_type: string; reason: string; created_at: string }
+export interface QPointsSummary {
+  points: number;
+  entries: QPointEntry[];
   page: number;
   page_size: number;
   total: number;

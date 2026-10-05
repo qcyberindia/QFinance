@@ -144,9 +144,9 @@ async def _load_author_and_company(db: AsyncSession, *, author_id: uuid.UUID, co
 
 
 def _is_visible_to(research: Research, *, viewer_id: uuid.UUID | None, is_staff: bool) -> bool:
-    """§7.1.2 eligibility gate — BEFORE any access_tier/tier consideration.
-    access_tier never bypasses this; it only affects what a FREE viewer sees
-    once an item is otherwise eligible."""
+    """§7.1.2 eligibility gate — the only read-access rule: drafts are
+    private to the author (and staff); published + active items are visible
+    to every member. There is no paid tier."""
     if is_staff:
         return True
     if research.author_id == viewer_id:
@@ -155,67 +155,47 @@ def _is_visible_to(research: Research, *, viewer_id: uuid.UUID | None, is_staff:
 
 
 def serialize_for_viewer(research: Research, *, sources: list[ResearchSource], tags: list[str],
-                          viewer_is_member: bool, company: dict) -> dict:
-    """§7.1.2/§7.4.1/§7.4.2 shared tier-gating rule, access_tier checked FIRST:
-    (1) access_tier == 'free_example' -> full representation regardless of tier (MEM-004)
-    (2) access_tier == 'core' -> existing LIB-003 rule: MEMBER sees full, FREE sees preview.
-    Author/staff callers always get the full representation (checked by the caller
-    before calling this — see router.py — so this function only implements the
-    *tier* half of visibility, not the ownership/staff half).
+                          company: dict) -> dict:
+    """Full representation of a research item for a caller who is allowed to
+    see it (see `_is_visible_to`: the author/staff for drafts, any member for
+    published + active items).
 
-    `company` (Research Phase 3): the caller-loaded Research Subject context
-    (name/symbol/exchange/sector/industry/description) — see
-    `_load_author_and_company`. Included only on the full representation, not
-    the preview branch, matching §7.1.2's existing preview shape (which never
-    exposed company info before, and still doesn't now — no scope change to
-    what a FREE viewer of a 'core' item can see).
-
-    `brief` (Research Phase 3): the Initial Research Brief, built purely from
-    `company` + `research.title` (the persisted research question — no
-    separate `research_question` column exists or is added; `title` already
-    serves exactly that role per `create_research`). Included only on the
-    full representation for the same reason as `company` — it is orientation
-    for someone actually working the item, not preview-teaser content."""
-    if research.access_tier == "free_example" or viewer_is_member:
-        return {
-            "id": str(research.id), "author_id": str(research.author_id), "company_id": str(research.company_id),
-            "company": company,
-            "brief": build_initial_brief(company=company, research_question=research_question_of(research)),
-            "research_type": research.research_type, "industry": research.industry,
-            "status": research.status, "moderation_status": research.moderation_status,
-            "access_tier": research.access_tier, "title": research.title, "summary": research.summary,
-            "current_version": research.current_version,
-            **{f: getattr(research, f) for f in QRES_STAGE_FIELDS},
-            **{f: getattr(research, f) for f in EXTENDED_SECTION_FIELDS},
-            "disclosure": {
-                "conflict_disclosed": research.conflict_disclosed, "conflict_detail": research.conflict_detail,
-                "position_disclosed": research.position_disclosed, "position_detail": research.position_detail,
-                "research_date": research.research_date,
-            },
-            "sources": [{"id": str(s.id), "label": s.label, "reference": s.reference,
-                         "supports_claim": s.supports_claim} for s in sources],
-            "tags": tags, "published_at": research.published_at,
-            "created_at": research.created_at, "updated_at": research.updated_at,
-        }
-    # 'core' access_tier + FREE viewer -> paywalled preview (LIB-003)
+    Qfinera is free: there is no paid tier and no preview/paywall shape. The
+    legacy `research.access_tier` column ('core'/'free_example', AD-18) is
+    no longer read or exposed anywhere — it has no effect on access."""
     return {
-        "preview": True, "id": str(research.id), "title": research.title,
-        "author_id": str(research.author_id), "summary": research.summary, "access_tier": "core",
+        "id": str(research.id), "author_id": str(research.author_id), "company_id": str(research.company_id),
+        "company": company,
+        "brief": build_initial_brief(company=company, research_question=research_question_of(research)),
+        "research_type": research.research_type, "industry": research.industry,
+        "status": research.status, "moderation_status": research.moderation_status,
+        "title": research.title, "summary": research.summary,
+        "current_version": research.current_version,
+        **{f: getattr(research, f) for f in QRES_STAGE_FIELDS},
+        **{f: getattr(research, f) for f in EXTENDED_SECTION_FIELDS},
+        "disclosure": {
+            "conflict_disclosed": research.conflict_disclosed, "conflict_detail": research.conflict_detail,
+            "position_disclosed": research.position_disclosed, "position_detail": research.position_detail,
+            "research_date": research.research_date,
+        },
+        "sources": [{"id": str(s.id), "label": s.label, "reference": s.reference,
+                     "supports_claim": s.supports_claim} for s in sources],
+        "tags": tags, "published_at": research.published_at,
+        "created_at": research.created_at, "updated_at": research.updated_at,
     }
 
 
 async def get_research_view(db: AsyncSession, research_id: uuid.UUID, *, viewer_id: uuid.UUID | None,
-                             viewer_is_member: bool, is_staff: bool) -> dict:
+                             is_staff: bool) -> dict:
+    """Drafts are private to the author (and staff); published, unmoderated
+    research is readable by any member — no membership tier involved."""
     research = await get_research_or_404(db, research_id)
     if not _is_visible_to(research, viewer_id=viewer_id, is_staff=is_staff):
         raise NotFound("Research item not found.")  # §0.5 — MVP doesn't distinguish 404 vs 403 here
     sources = await _load_sources(db, research_id)
     tags = await _load_tags(db, research_id)
     _, company = await _load_author_and_company(db, author_id=research.author_id, company_id=research.company_id)
-    # Author/staff always get the full representation, independent of access_tier.
-    if is_staff or research.author_id == viewer_id:
-        return serialize_for_viewer(research, sources=sources, tags=tags, viewer_is_member=True, company=company)
-    return serialize_for_viewer(research, sources=sources, tags=tags, viewer_is_member=viewer_is_member, company=company)
+    return serialize_for_viewer(research, sources=sources, tags=tags, company=company)
 
 
 # ---------------------------------------------------------------------------
@@ -519,19 +499,11 @@ async def _library_item(db: AsyncSession, r: Research) -> dict:
         "industry": r.industry, "created_at": r.created_at, "updated_at": r.updated_at,
         "status_label": r.status, "moderation_status": r.moderation_status, "tags": tags,
         "source_count": len(sources), "current_version": r.current_version,
-        "access_tier": r.access_tier, "preview": False,
-    }
-
-
-def _preview_item(r: Research, author: dict) -> dict:
-    return {
-        "preview": True, "id": str(r.id), "title": r.title,
-        "author": author, "summary": r.summary, "access_tier": "core",
     }
 
 
 async def list_library(db: AsyncSession, *, company_id: uuid.UUID | None, industry: str | None,
-                        page: int, page_size: int, viewer_is_member: bool,
+                        page: int, page_size: int,
                         include_moderated: bool = False, is_staff: bool = False) -> tuple[list[dict], int]:
     """LIB-001/002. `include_moderated` (API Spec §12 item 3, end of §10) lets
     MODERATOR/ADMIN/SUPER_ADMIN see `restricted`/`removed` items too — gated
@@ -557,14 +529,7 @@ async def list_library(db: AsyncSession, *, company_id: uuid.UUID | None, indust
     stmt = stmt.order_by(Research.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
     rows = (await db.execute(stmt)).scalars().all()
 
-    items = []
-    for r in rows:
-        if r.access_tier == "free_example" or viewer_is_member or is_staff:
-            items.append(await _library_item(db, r))
-        else:
-            author, _ = await _load_author_and_company(db, author_id=r.author_id, company_id=r.company_id)
-            items.append(_preview_item(r, author))
-    return items, total
+    return [await _library_item(db, r) for r in rows], total
 
 
 def build_research_search_sql(select_clause: str, *, include_moderated: bool = False) -> str:
@@ -601,7 +566,7 @@ def build_research_search_sql(select_clause: str, *, include_moderated: bool = F
 
 
 async def search_research(db: AsyncSession, *, query: str, page: int, page_size: int,
-                           viewer_is_member: bool, include_moderated: bool = False,
+                           include_moderated: bool = False,
                            is_staff: bool = False) -> tuple[list[dict], int]:
     """LIB-004/SEARCH-001-003. Uses the exact FTS indexes Database Schema V1
     §7/§8 defines (see build_research_search_sql). `include_moderated` mirrors
@@ -627,14 +592,7 @@ async def search_research(db: AsyncSession, *, query: str, page: int, page_size:
         ),
         {"q": query, "like_q": like_q, "off": (page - 1) * page_size, "lim": page_size},
     )).all()
-    items = []
-    for row in id_rows:
-        r = await db.get(Research, row.id)
-        if r.access_tier == "free_example" or viewer_is_member or is_staff:
-            items.append(await _library_item(db, r))
-        else:
-            author, _ = await _load_author_and_company(db, author_id=r.author_id, company_id=r.company_id)
-            items.append(_preview_item(r, author))
+    items = [await _library_item(db, await db.get(Research, row.id)) for row in id_rows]
     return items, count_row
 
 
@@ -669,7 +627,7 @@ async def export_csv(db: AsyncSession, author_id: uuid.UUID) -> str:
 #
 # SECOND BUG, caught during the follow-up verification pass: this function and
 # VALID_MODERATION_STATUSES were accidentally defined TWICE in this file (the
-# duplicate sat right above VALID_ACCESS_TIERS, near set_access_tier). Python
+# duplicate sat further down this file). Python
 # doesn't error on this — the second definition silently wins — but it's dead,
 # confusing duplication. Removed; this is now the single definition.
 # ---------------------------------------------------------------------------
@@ -698,25 +656,6 @@ async def apply_moderation_status(db: AsyncSession, *, research_id: uuid.UUID, n
 # ---------------------------------------------------------------------------
 # Access tier (§7.5.1, AD-19, Founder Decision #2)
 # ---------------------------------------------------------------------------
-
-VALID_ACCESS_TIERS = ("core", "free_example")
-
-
-async def set_access_tier(db: AsyncSession, *, research_id: uuid.UUID, actor_id: uuid.UUID,
-                           access_tier: str) -> Research:
-    if access_tier not in VALID_ACCESS_TIERS:
-        raise QFinanceAPIError("INVALID_ACCESS_TIER", "access_tier must be 'core' or 'free_example'.", 400)
-    research = await get_research_or_404(db, research_id)
-    before = research.access_tier
-    research.access_tier = access_tier
-    await write_audit_log(
-        db, actor_id=actor_id, action_type="research.access_tier_changed",
-        target_entity_type="research", target_entity_id=research.id,
-        before_state={"access_tier": before}, after_state={"access_tier": access_tier},
-    )
-    await db.commit()
-    return research
-
 
 # ---------------------------------------------------------------------------
 # My Research listing + publish-to-community bridge (API Spec V2 §2, Architecture V2 §5)
@@ -783,6 +722,16 @@ async def publish_to_community(db: AsyncSession, *, research_id: uuid.UUID, acto
     # own import — deferred to call-time instead, matching the same deferred-
     # import pattern community/router.py itself already uses for research.
     from app.modules.community import service as community_service
+    from app.modules.community.models import Post
+
+    # One thesis post per research item: re-sharing returns the existing
+    # post instead of duplicating it in the feed.
+    existing = (await db.execute(
+        select(Post).where(Post.research_id == research_id, Post.post_type == "thesis", Post.status == "visible")
+        .order_by(Post.created_at.asc()).limit(1)
+    )).scalar_one_or_none()
+    if existing is not None:
+        return await community_service.serialize_post(db, existing)
 
     post = await community_service.create_research_discussion_post(
         db, actor_id=actor_id, research_id=research_id, content=summary, post_type="thesis",

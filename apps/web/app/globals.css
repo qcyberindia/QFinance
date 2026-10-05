@@ -4,39 +4,94 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
+/* ============================================================
+   QFINERA DESIGN SYSTEM — "Futuristic Financial Intelligence"
+   ============================================================
+   Token NAMES are unchanged from the prior cream/brass "ledger" system on
+   purpose: every component built so far (~20 files) reads colors through
+   these variables (var(--ink), var(--brass), var(--cream-0), etc.) rather
+   than hardcoded hex — so retargeting the VALUES here is what propagates
+   the new visual identity across the whole product in one place, per this
+   pass's own instruction not to hand-style page by page. Renaming the
+   variables would have meant touching every one of those files for no
+   visual benefit.
+
+   Direction: graphite/near-black + clean white surfaces, one restrained
+   accent (kept as amber/gold — Qfinera's existing brand accent — refined
+   rather than replaced, since "one recognizable accent, used sparingly" was
+   already true of it; swapping to something like blue/violet would read as
+   generic SaaS, not a considered choice). Light mode is the default surface
+   (white/near-white, graphite text) — better for a document-dense research
+   product than a dark default — with a proper near-black dark mode via
+   prefers-color-scheme, not merely an inverted light palette.
+   ============================================================ */
 :root {
-  --cream-0: #fbf8f1;
-  --cream-1: #f3edde;
-  --cream-2: #e9dfc6;
-  --line: #d8cba9;
-  --brass: #a8863e;
-  --brass-dark: #7c6329;
-  --ink: #2b2621;
-  --ink-soft: #5b5347;
-  --up: #4b6c4a;
-  --down: #9c4b3f;
-  --focus-ring: rgba(168, 134, 62, 0.35);
+  /* Surfaces (light — default) */
+  --cream-0: #ffffff;      /* base surface / cards */
+  --cream-1: #f5f6f8;      /* secondary surface (sidebar, subtle panels) */
+  --cream-2: #eceef2;      /* tertiary surface (hatch/locked fill, hover) */
+  --line: #dfe2e8;         /* hairline borders */
+  --ink: #14161a;          /* near-black graphite — primary text, headings, nav */
+  --ink-soft: #5a616e;     /* secondary text, metadata */
+
+  /* Accent — one, used sparingly (buttons, active states, links) */
+  --brass: #b8863c;
+  --brass-dark: #8f6526;
+
+  /* Semantic */
+  --up: #3f7a5a;
+  --down: #b23b3b;
+  --warning: #b8863c;
+  --info: #3b6db2;
+  --focus-ring: rgba(184, 134, 60, 0.35);
+
+  /* Radius scale */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+
+  /* Shadow scale — subtle depth, not heavy elevation */
+  --shadow-sm: 0 1px 2px rgba(20, 22, 26, 0.05);
+  --shadow-md: 0 2px 8px rgba(20, 22, 26, 0.06), 0 1px 0 rgba(20, 22, 26, 0.04);
+  --shadow-lg: 0 12px 32px rgba(20, 22, 26, 0.10), 0 2px 6px rgba(20, 22, 26, 0.05);
+
+  /* Motion — fast and purposeful */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
 @media (prefers-color-scheme: dark) {
-  /* Qfinera has one theme (cream/brass) by design (Design Docs §1/§18) — this
-     is not a second visual language, just enough contrast remapping so the
-     existing cream-on-ink hierarchy stays legible on a dark system/browser
-     background instead of inverting oddly. Same tokens, same relationships. */
   :root {
-    --cream-0: #1c1914;
-    --cream-1: #262019;
-    --cream-2: #332b1f;
-    --line: #4a4030;
-    --ink: #f3edde;
-    --ink-soft: #c9bfa8;
+    /* Surfaces (dark) — genuine near-black graphite, not an inverted light
+       palette: distinct surface steps so cards/panels still read as raised
+       against the page rather than all collapsing to one flat black. */
+    --cream-0: #101216;
+    --cream-1: #16191f;
+    --cream-2: #1e222a;
+    --line: #2a2f39;
+    --ink: #f2f3f5;
+    --ink-soft: #9aa1ad;
+
+    --brass: #d6a75e;
+    --brass-dark: #b8863c;
+
+    --up: #5fae82;
+    --down: #d67a6d;
+    --warning: #d6a75e;
+    --info: #6ea0e0;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.45);
   }
 }
 
 html, body {
-  background: var(--cream-0);
+  background: var(--cream-1);
   color: var(--ink);
   font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -48,28 +103,59 @@ html, body {
   outline-offset: 2px;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 .font-display { font-family: 'Fraunces', serif; }
 .font-mono { font-family: 'JetBrains Mono', monospace; }
 
+/* ---- Type scale (Phase 2) ---- */
+.qf-display       { font-family: 'Fraunces', serif; font-weight: 600; font-size: clamp(28px, 4vw, 40px); line-height: 1.1; letter-spacing: -0.01em; }
+.qf-page-title     { font-family: 'Fraunces', serif; font-weight: 600; font-size: 24px; line-height: 1.2; letter-spacing: -0.005em; }
+.qf-section-title  { font-family: 'Fraunces', serif; font-weight: 600; font-size: 17px; line-height: 1.3; }
+.qf-card-title     { font-weight: 600; font-size: 14px; line-height: 1.4; }
+.qf-body           { font-size: 14px; line-height: 1.6; }
+.qf-secondary      { font-size: 13px; line-height: 1.5; color: var(--ink-soft); }
+.qf-metadata       { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.01em; color: var(--ink-soft); }
+.qf-caption        { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft); font-weight: 600; }
+
+/* ---- Surfaces ---- */
 .qf-card {
   background: var(--cream-0);
   border: 1px solid var(--line);
-  border-radius: 3px;
-  box-shadow: 0 1px 0 rgba(43,38,33,.06), 0 8px 24px rgba(43,38,33,.06);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--motion-base) var(--motion-ease), border-color var(--motion-base) var(--motion-ease);
 }
 
+.qf-panel {
+  background: var(--cream-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+/* ---- Buttons ---- */
 .qf-btn-primary,
 .qf-btn-gold,
 .qf-btn-ghost {
   font-weight: 600;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   font-size: 13.5px;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease, transform 80ms ease;
+  transition: background-color var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease),
+              color var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease),
+              transform 80ms var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  min-height: 38px; /* keeps touch targets close to the 44px guideline once padding is included */
 }
 
 .qf-btn-primary {
@@ -83,7 +169,7 @@ html, body {
 
 .qf-btn-gold {
   background: var(--brass);
-  color: var(--cream-0);
+  color: #ffffff;
   padding: 10px 20px;
   border: 1px solid var(--brass);
 }
@@ -92,11 +178,11 @@ html, body {
 
 .qf-btn-ghost {
   background: transparent;
-  border: 1px solid var(--ink);
+  border: 1px solid var(--line);
   color: var(--ink);
   padding: 9px 19px;
 }
-.qf-btn-ghost:hover:not(:disabled) { background: var(--cream-1); }
+.qf-btn-ghost:hover:not(:disabled) { background: var(--cream-1); border-color: var(--ink-soft); }
 .qf-btn-ghost:active:not(:disabled) { transform: translateY(1px); }
 
 .qf-btn-primary:disabled,
@@ -107,15 +193,16 @@ html, body {
   transform: none;
 }
 
+/* ---- Inputs ---- */
 .qf-input {
   border: 1px solid var(--line);
   background: var(--cream-0);
   color: var(--ink);
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   padding: 10px 13px;
   font-size: 13.5px;
   width: 100%;
-  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+  transition: border-color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) var(--motion-ease);
 }
 .qf-input:hover:not(:disabled) { border-color: var(--brass); }
 .qf-input:focus {
@@ -130,26 +217,23 @@ html, body {
 }
 textarea.qf-input { resize: vertical; line-height: 1.55; }
 
-/* Any plain clickable row/card that isn't already a .qf-btn-* — gives every
-   interactive card (research list items, explore items, nav rows) a
-   consistent, visible hover/active affordance instead of relying on the
-   cursor alone. */
+/* ---- Interactive surfaces ---- */
 .qf-clickable {
-  transition: border-color 120ms ease, background-color 120ms ease, transform 80ms ease;
+  transition: border-color var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) var(--motion-ease),
+              transform 80ms var(--motion-ease), box-shadow var(--motion-base) var(--motion-ease);
   cursor: pointer;
 }
-.qf-clickable:hover { border-color: var(--brass); }
+.qf-clickable:hover { border-color: var(--brass); box-shadow: var(--shadow-md); }
 .qf-clickable:active { transform: translateY(1px); }
 
 .qf-nav-item {
-  transition: background-color 120ms ease, color 120ms ease;
-  border-radius: 3px;
+  transition: background-color var(--motion-fast) var(--motion-ease), color var(--motion-fast) var(--motion-ease);
+  border-radius: var(--radius-sm);
 }
-.qf-nav-item:hover { background: var(--cream-1); }
+.qf-nav-item:hover { background: var(--cream-2); }
 .qf-nav-item:focus-visible { outline-offset: -2px; }
 
-/* Small pill used to visually flag content that is assembled/derived rather
-   than directly authored (Research Workspace sections 11/13). */
+/* ---- Badges / status ---- */
 .qf-derived-badge {
   display: inline-block;
   font-size: 10px;
@@ -163,6 +247,16 @@ textarea.qf-input { resize: vertical; line-height: 1.55; }
   background: var(--cream-1);
 }
 
+/* Generic status dot + label pairing (Saved / Added / Published / Connected,
+   etc.) — never color-only: always paired with text by convention. */
+.qf-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
 .qf-label {
   display: block;
   font-size: 11px;
@@ -171,4 +265,33 @@ textarea.qf-input { resize: vertical; line-height: 1.55; }
   color: var(--ink-soft);
   margin-bottom: 6px;
   font-weight: 600;
+}
+
+/* ---- Skeleton loading ---- */
+.qf-skeleton {
+  background: linear-gradient(90deg, var(--cream-2) 25%, var(--line) 37%, var(--cream-2) 63%);
+  background-size: 400% 100%;
+  animation: qf-skeleton-shimmer 1.4s ease infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes qf-skeleton-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qf-skeleton { animation: none; background: var(--cream-2); }
+}
+
+/* ---- Toast feedback (Phase 16) ---- */
+.qf-toast {
+  background: var(--ink);
+  color: var(--cream-0);
+  border-radius: var(--radius-md);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }

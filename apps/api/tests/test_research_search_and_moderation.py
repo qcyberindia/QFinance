@@ -2,7 +2,7 @@
   A. FTS query construction (build_research_search_sql) — pure, no DB needed.
   B. include_moderated authorization gating — pure boolean logic, no DB needed.
   C. Library/search response shape (author/company nesting) is exercised
-     indirectly via _library_item/_preview_item's dict shape, without a DB,
+     indirectly via _library_item's dict shape, without a DB,
      by checking the functions build the expected keys from a stub object.
 
 STATUS: these exact assertions were actually executed against real Python in
@@ -21,7 +21,8 @@ paths remain in test_research_integration.py, still skip-marked.
 import uuid
 from datetime import datetime, timezone
 
-from app.modules.research.service import _preview_item, build_research_search_sql
+from app.modules.research import service as research_service
+from app.modules.research.service import build_research_search_sql
 from app.modules.research.models import Research
 
 
@@ -127,16 +128,16 @@ def _make_research_stub(**overrides) -> Research:
     return r
 
 
-def test_preview_item_nests_author_object_not_flat_id():
+def test_no_paywall_preview_shape_remains():
+    """Qfinera is free: the legacy LIB-003 preview item builder is gone, and
+    the full serializer no longer takes a membership flag or exposes the
+    inert access_tier column."""
+    import inspect
+    assert not hasattr(research_service, "_preview_item")
+    assert "viewer_is_member" not in inspect.signature(research_service.serialize_for_viewer).parameters
     r = _make_research_stub()
-    author = {"id": str(r.author_id), "name": "Ananya K.", "username": "ananya_k"}
-    item = _preview_item(r, author)
-    assert item["author"] == author
-    assert "author_id" not in item
-
-
-def test_preview_item_marks_preview_true_and_core_tier():
-    r = _make_research_stub()
-    item = _preview_item(r, {"id": str(r.author_id), "name": None, "username": None})
-    assert item["preview"] is True
-    assert item["access_tier"] == "core"
+    company = {"id": str(r.company_id), "name": "X", "symbol": None, "exchange": None,
+               "sector": None, "industry": None, "description": None}
+    body = research_service.serialize_for_viewer(r, sources=[], tags=[], company=company)
+    assert "access_tier" not in body and "preview" not in body
+    assert "bear_case" in body

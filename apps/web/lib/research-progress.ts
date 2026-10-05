@@ -252,3 +252,30 @@ export function deriveReviewSummary(item: ResearchFull) {
     key: s.key, n: s.n, label: s.label, filled: isSectionFilled(item, s), implemented: s.implemented,
   }));
 }
+
+/** Visual grouping of SECTIONS for the workspace's progress rail. References
+ * section KEYS only — the stage definitions themselves stay in SECTIONS. */
+export const STAGE_GROUPS: { label: string; keys: string[] }[] = [
+  { label: "Foundation", keys: ["question", "business", "industry"] },
+  { label: "Analysis", keys: ["financials", "growth", "management", "forecast"] },
+  { label: "Thesis", keys: ["valuation", "scenarios", "risks", "thesis", "invalidation"] },
+  { label: "Review", keys: ["review"] },
+];
+
+/** One-line purpose of each stage, shown under the active stage title and in
+ * the assistant header — what the stage is trying to discover. */
+export const STAGE_PURPOSE: Record<string, string> = {
+  question: "Write the question that will guide this research.",
+  business: "Understand how the company makes money, who its customers are, and what drives the business.",
+  industry: "Understand the competitive landscape and whether the company has a durable edge.",
+  financials: "Understand revenue, profitability, margins, debt and cash generation.",
+  growth: "Understand what could drive growth — and what must go right for it to happen.",
+  management: "Understand who runs the business and how they allocate capital.",
+  forecast: "Make explicit the assumptions your outlook depends on.",
+  valuation: "Compare what you would pay with what the business may be worth.",
+  scenarios: "Describe what happens if things go better, as expected, or worse.",
+  risks: "Identify what could break your thinking, and how you would notice.",
+  thesis: "See what you currently believe, and why — assembled from your own work.",
+  invalidation: "Decide in advance what evidence would change your mind.",
+  review: "Step back, check completeness, and prepare the research for publishing.",
+};

@@ -22,6 +22,21 @@ class AuthorRef(BaseModel):
     username: str | None = None
 
 
+class ThesisCompanyRef(BaseModel):
+    name: str | None = None
+    symbol: str | None = None
+    exchange: str | None = None
+
+
+class ThesisRef(BaseModel):
+    """Public reference to a thesis post's published research (title,
+    company, version) — present only while that research is published."""
+    research_title: str | None = None
+    version: int
+    published_at: datetime | None = None
+    company: ThesisCompanyRef
+
+
 class PostResponse(BaseModel):
     id: str
     channel: str | None
@@ -35,6 +50,28 @@ class PostResponse(BaseModel):
     status: str
     reaction_count: int
     comment_count: int
+    viewer_reacted: bool = False
+    viewer_bookmarked: bool = False
+    thesis: ThesisRef | None = None
+
+
+class ThesisSource(BaseModel):
+    label: str | None = None
+    reference: str | None = None
+    supports_claim: str | None = None
+
+
+class ThesisSnapshotResponse(BaseModel):
+    """The published reasoning behind a thesis post, from the latest
+    immutable research_versions snapshot (community/service.py's
+    THESIS_SNAPSHOT_FIELDS allow-list)."""
+    post_id: str
+    company: ThesisCompanyRef
+    version: int
+    version_created_at: datetime
+    published_at: datetime | None = None
+    sections: dict[str, str | bool | None]
+    sources: list[ThesisSource]
 
 
 class PostListResponse(BaseModel):

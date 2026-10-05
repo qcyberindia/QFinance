@@ -10,7 +10,11 @@ an ML/recommendation system):
                                           your content)
   rating_received       ->  10 points  (one rating received on your thesis)
 
-  1 point = ₹1 = 100 paise (POINTS_TO_PAISE_RATE)
+Q-POINTS ARE NOT MONEY. They are a reputation/contribution score only — no
+rupee or paise value, no balance, no credit ledger, no redemption, no
+transfer, and no effect on any price. (An earlier revision converted points
+to paise and wrote `credit_ledger` rows; that monetary interpretation was
+removed. The `credit_ledger` table is no longer written or read.)
 
 IDEMPOTENCY — the actual fix this revision makes, replacing an earlier,
 genuinely incorrect design:
@@ -61,7 +65,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.contributions.models import Contribution, CreditLedgerEntry
+from app.modules.contributions.models import Contribution
 
 logger = logging.getLogger("qfinance.contributions")
 
@@ -70,34 +74,31 @@ POINTS_BY_SOURCE = {
     "engagement_received": 5,
     "rating_received": 10,
 }
-POINTS_TO_PAISE_RATE = 100  # 1 point = ₹1 = 100 paise
+
+
+SOURCE_LABELS = {
+    "thesis_published": "Thesis published to Community",
+    "engagement_received": "Engagement received",
+    "rating_received": "Thesis rating received",
+}
 
 
 async def _record(db: AsyncSession, *, user_id: uuid.UUID, actor_id: uuid.UUID, source_type: str,
-                   source_entity_id: uuid.UUID, reason: str) -> Contribution | None:
+                   source_entity_id: uuid.UUID) -> Contribution | None:
     """Returns the created Contribution, or None if this exact
     (actor_id, source_type, source_entity_id) combination was already
-    recorded — the ONLY condition this function treats as expected/silent."""
-    points = POINTS_BY_SOURCE[source_type]
+    recorded — the ONLY condition this function treats as expected/silent.
+    Writes the points row only; nothing monetary."""
     contribution = Contribution(
         id=uuid.uuid4(), user_id=user_id, actor_id=actor_id, source_type=source_type,
-        source_entity_id=source_entity_id, points=points,
+        source_entity_id=source_entity_id, points=POINTS_BY_SOURCE[source_type],
     )
     db.add(contribution)
     try:
         await db.flush()
     except IntegrityError:
-        # Expected, anticipated condition: this exact contribution already
-        # exists (the DB's own ux_contributions_actor_event_target constraint
-        # fired). Roll back this failed INSERT attempt and treat it as a
-        # deliberate no-op — NOT an error, and NOT re-raised.
         await db.rollback()
         return None
-
-    db.add(CreditLedgerEntry(
-        id=uuid.uuid4(), user_id=user_id, amount_paise=points * POINTS_TO_PAISE_RATE,
-        reason=reason, contribution_id=contribution.id,
-    ))
     await db.commit()
     return contribution
 
@@ -108,8 +109,7 @@ async def record_thesis_published(db: AsyncSession, *, user_id: uuid.UUID, resea
     trigger. A second publish-to-community call for the same research_id by
     the same user correctly earns nothing further (see module docstring)."""
     return await _record(
-        db, user_id=user_id, actor_id=user_id, source_type="thesis_published", source_entity_id=research_id,
-        reason="Thesis published to Community",
+        db, user_id=user_id, actor_id=user_id, source_type="thesis_published", source_entity_id=research_id
     )
 
 
@@ -127,8 +127,7 @@ async def record_engagement_received(db: AsyncSession, *, author_id: uuid.UUID, 
     if actor_id == author_id:
         return None
     return await _record(
-        db, user_id=author_id, actor_id=actor_id, source_type="engagement_received", source_entity_id=target_id,
-        reason=f"{engagement_label} received",
+        db, user_id=author_id, actor_id=actor_id, source_type="engagement_received", source_entity_id=target_id
     )
 
 
@@ -142,42 +141,33 @@ async def record_rating_received(db: AsyncSession, *, author_id: uuid.UUID, acto
     if actor_id == author_id:
         return None
     return await _record(
-        db, user_id=author_id, actor_id=actor_id, source_type="rating_received", source_entity_id=post_id,
-        reason="Thesis rating received",
+        db, user_id=author_id, actor_id=actor_id, source_type="rating_received", source_entity_id=post_id
     )
 
 
-async def get_balance_paise(db: AsyncSession, *, user_id: uuid.UUID) -> int:
+async def get_total_points(db: AsyncSession, *, user_id: uuid.UUID) -> int:
     total = (await db.execute(
-        select(func.coalesce(func.sum(CreditLedgerEntry.amount_paise), 0)).where(CreditLedgerEntry.user_id == user_id)
+        select(func.coalesce(func.sum(Contribution.points), 0)).where(Contribution.user_id == user_id)
     )).scalar_one()
     return int(total)
 
 
-async def get_credits_summary(db: AsyncSession, *, user_id: uuid.UUID, page: int, page_size: int) -> dict:
-    balance = await get_balance_paise(db, user_id=user_id)
+async def get_points_summary(db: AsyncSession, *, user_id: uuid.UUID, page: int, page_size: int) -> dict:
+    """The member's Q-Point score plus their contribution history — points
+    only, never a currency amount."""
+    points = await get_total_points(db, user_id=user_id)
     total = (await db.execute(
-        select(func.count()).select_from(CreditLedgerEntry).where(CreditLedgerEntry.user_id == user_id)
+        select(func.count()).select_from(Contribution).where(Contribution.user_id == user_id)
     )).scalar_one()
     rows = (await db.execute(
-        select(CreditLedgerEntry).where(CreditLedgerEntry.user_id == user_id)
-        .order_by(CreditLedgerEntry.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        select(Contribution).where(Contribution.user_id == user_id)
+        .order_by(Contribution.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()
     return {
-        "balance_paise": balance, "page": page, "page_size": page_size, "total": total,
-        "entries": rows,
+        "points": points, "page": page, "page_size": page_size, "total": total,
+        "entries": [
+            {"points": c.points, "source_type": c.source_type,
+             "reason": SOURCE_LABELS.get(c.source_type, c.source_type), "created_at": c.created_at}
+            for c in rows
+        ],
     }
-
-
-async def calculate_effective_premium_price_paise(db: AsyncSession, *, user_id: uuid.UUID,
-                                                    plan_price_paise: int) -> tuple[int, int]:
-    """Architecture V2 §7's read-time entitlement calculation — never writes
-    to `billing.payments`/Razorpay, purely a display/quote calculation
-    consumed by membership/service.py's get_my_membership. Returns
-    (available_credit_paise, effective_price_paise). Credit never exceeds
-    the plan price itself (no negative effective price). No cap on
-    available credit itself is applied in MVP — flagged as a future config
-    knob, not implemented as a limit."""
-    available = await get_balance_paise(db, user_id=user_id)
-    applied = min(available, plan_price_paise)
-    return available, max(plan_price_paise - applied, 0)

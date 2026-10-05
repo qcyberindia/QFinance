@@ -4,403 +4,454 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api-client";
 import type { ResearchFull } from "@/lib/types";
-import { Card, ErrorState, LoadingState } from "@/components/states";
+import { ErrorState } from "@/components/states";
 import { ThesisCardFromResearch } from "@/components/ThesisCard";
 import { ResearchAssistantPanel } from "@/components/research-assistant-panel";
+import { useSession } from "@/lib/session";
 import {
-  SECTIONS, computeProgress, deriveInvestmentThesis, deriveReviewSummary, isSectionFilled, type GuidedSection,
+  SECTIONS, STAGE_GROUPS, STAGE_PURPOSE, computeProgress, deriveInvestmentThesis, deriveReviewSummary,
+  isSectionFilled, type GuidedSection,
 } from "@/lib/research-progress";
+import s from "@/components/research/research.module.css";
 
 /**
- * Research Workspace — Phase 2A: converts existing-but-previously-unwired
- * backend fields into real, editable, persisted sections.
+ * Research Workspace — three areas that read as one workspace:
+ *   LEFT   progress rail (STAGE_GROUPS over lib/research-progress.ts SECTIONS)
+ *   CENTER one research document for the active stage
+ *   RIGHT  the contextual Research Assistant (follows the active stage)
  *
- * FIELD-MAPPING NOTE, updated in the Research-Section-completion pass: the
- * `research` table now also has `management_notes`/`assumptions_outlook`
- * (alembic/versions/0007_research_management_and_assumptions.py, additive-
- * only) so Sections 06/07 are real, persisted fields like every other
- * section below — not fabricated, not client-only. "Investment Thesis" (11)
- * and "Review" (13) remain DERIVED, read-only summaries assembled from
- * already-saved fields (see lib/research-progress.ts's
- * deriveInvestmentThesis/deriveReviewSummary) — correctly so, since neither
- * needs its own database column.
+ * Section -> field mapping is unchanged (all real `ResearchFull` fields,
+ * saved via the existing `PATCH /research/{id}`; see lib/research-progress.ts):
+ *   01 question -> summary, 02 business -> business_model, 03 industry ->
+ *   competitive_position, 04 financials -> financial_snapshot, 05 growth ->
+ *   catalysts, 06 management -> management_notes, 07 forecast ->
+ *   assumptions_outlook, 08 valuation -> valuation_range, 09 scenarios ->
+ *   bull/base/bear_case, 10 risks -> risk_register, 11 thesis -> DERIVED,
+ *   12 invalidation -> invalidation_conditions, 13 review -> DERIVED.
  *
- * VERIFIED before writing any frontend code (per this phase's own "inspect
- * the existing PATCH API before changing it" instruction): `research/
- * schemas.py`'s `ResearchPatchRequest` already accepts every field below as
- * an independently-optional partial-PATCH field, and `research/service.py`'s
- * `patch_draft`/`patch_published` already handle all of them generically via
- * `_PATCHABLE_CONTENT_FIELDS`. NO backend/API change was needed or made for
- * this phase — confirmed, not assumed.
- *
- * Phase 2A verification pass note: `SECTIONS`/`isSectionFilled`/
- * `computeProgress` were extracted to `lib/research-progress.ts` (zero
- * behavior change) so the completeness logic can be tested independently of
- * React — see that file and `lib/research-progress.test.mjs`.
- *
- * Section -> field mapping, all real fields, none invented (all 13 render):
- *   01 Research Focus          -> summary                              FUNCTIONAL
- *   02 Business                -> business_model                       FUNCTIONAL
- *   03 Industry & Competition  -> competitive_position                  FUNCTIONAL
- *   04 Financials              -> financial_snapshot                    FUNCTIONAL
- *   05 Growth Drivers          -> catalysts                             FUNCTIONAL
- *   06 Management              -> management_notes                      FUNCTIONAL (0007 migration)
- *   07 Assumptions & Outlook   -> assumptions_outlook                   FUNCTIONAL (0007 migration)
- *   08 Valuation                -> valuation_range                      FUNCTIONAL (notes/assumptions only — no DCF engine)
- *   09 Bull / Base / Bear       -> bull_case / base_case / bear_case    FUNCTIONAL
- *   10 Risks                    -> risk_register                       FUNCTIONAL
- *   11 Investment Thesis        -> DERIVED (see InvestmentThesisSection) — no field of its own, by design
- *   12 What Could Prove Me Wrong? -> invalidation_conditions            FUNCTIONAL
- *   13 Review                    -> DERIVED (see ReviewSection) — no field of its own, by design
- *
- * Every functional section below is a real textarea bound to a real
- * `ResearchFull` field, saved via the existing `PATCH /research/{id}`
- * endpoint, reloaded from the real backend response — never localStorage as
- * the source of truth. No fake evidence/source UI, no fake thesis field, no
- * probability/expected-return generation, no buy/sell/valuation verdict.
+ * Each field has ONE surface: saved content renders as document prose with
+ * an Edit action; the editor only appears when writing or editing. Publishing
+ * concepts live in 13 · Review only. No fake evidence, no scoring, no
+ * buy/sell verdicts, and AI content is never saved without Add to Research.
  */
-
-interface GuidedSectionLocalAlias extends GuidedSection {}
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
-/** Generic editable-textarea section — used by every FUNCTIONAL section
- * except 01 (Research Focus, which has its own change-note/publish-aware
- * form) and 09 (Bull/Base/Bear, which needs three fields at once). Reused
- * rather than duplicated per the "no duplicate abstractions" instruction. */
-function TextFieldSection({
-  meta, value, onSave, disabled,
-}: {
-  meta: GuidedSection;
-  value: string;
-  onSave: (newValue: string) => Promise<void>;
-  disabled?: boolean;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [status, setStatus] = useState<SaveStatus>("idle");
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => { setDraft(value); setStatus("idle"); }, [value]);
-
-  async function handleSave() {
-    setStatus("saving");
-    setErr(null);
-    try {
-      await onSave(draft);
-      setStatus("saved");
-    } catch (e) {
-      setStatus("error");
-      setErr(e instanceof ApiError ? e.message : "Could not save this section.");
-    }
-  }
-
+function Prose({ text }: { text: string }) {
+  const paragraphs = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
   return (
-    <Card>
-      <label className="qf-label">{meta.n} · {meta.label}</label>
-      {meta.question && <p className="text-sm font-medium mt-1">{meta.question}</p>}
-      {meta.guidance && (
-        <ul className="text-xs text-ink-soft mt-2 mb-3 list-disc pl-4 space-y-0.5">
-          {meta.guidance.map((g, i) => <li key={i}>{g}</li>)}
-        </ul>
-      )}
-      {meta.contentLabel && (
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-soft mt-3 mb-1">{meta.contentLabel}</p>
-      )}
-      <textarea
-        className="qf-input min-h-[140px]"
-        value={draft}
-        placeholder={meta.placeholder}
-        onChange={(e) => { setDraft(e.target.value); setStatus("idle"); }}
-        disabled={disabled}
-      />
-      {err && <p className="text-sm mt-2" style={{ color: "#9C4B3F" }}>{err}</p>}
-      <div className="flex items-center gap-3 mt-3">
-        <button
-          type="button"
-          className="qf-btn-primary"
-          onClick={handleSave}
-          disabled={disabled || status === "saving" || draft === value}
-        >
-          {status === "saving" ? "Saving…" : "Save"}
-        </button>
-        {status === "saved" && <span className="text-xs" style={{ color: "var(--brass)" }}>✓ Saved just now</span>}
-      </div>
-      <p className="text-xs text-ink-soft mt-2">
-        Evidence linking will be added in the Evidence phase.
-      </p>
-    </Card>
-  );
-}
-
-/** Bull / Base / Bear — three fields, one section. Each saved independently
- * (matches the existing PATCH contract: partial, per-field). */
-function ScenarioSection({
-  item, onSave, disabled,
-}: {
-  item: ResearchFull;
-  onSave: (field: "bull_case" | "base_case" | "bear_case", value: string) => Promise<void>;
-  disabled?: boolean;
-}) {
-  const rows: { field: "bull_case" | "base_case" | "bear_case"; title: string; helper: string }[] = [
-    { field: "bull_case", title: "Bull Case", helper: "Optimistic assumptions." },
-    { field: "base_case", title: "Base Case", helper: "Central assumptions." },
-    { field: "bear_case", title: "Bear Case", helper: "Downside assumptions." },
-  ];
-  return (
-    <div className="space-y-4">
-      {rows.map((row) => (
-        <Card key={row.field}>
-          <label className="qf-label">{row.title}</label>
-          <p className="text-xs text-ink-soft mb-2">{row.helper}</p>
-          <ScenarioField field={row.field} value={item[row.field] ?? ""} onSave={onSave} disabled={disabled} />
-        </Card>
-      ))}
-      <p className="text-xs text-ink-soft">
-        No probabilities or expected returns are assigned — each scenario is recorded as-is; none is marked correct.
-      </p>
+    <div className={s.prose}>
+      {paragraphs.map((p, i) => <p key={i}>{p}</p>)}
     </div>
   );
 }
 
-function ScenarioField({
-  field, value, onSave, disabled,
+/** One field, one surface: document view when saved, editor when writing. */
+function ResearchField({
+  id, ownerLabel, stageLabel, value, onSave, placeholder, emptyText, editorPrompt, published, changeNote, onChangeNote,
+  readOnly = false,
 }: {
-  field: "bull_case" | "base_case" | "bear_case";
+  id: string;
+  ownerLabel: string;
+  stageLabel: string;
   value: string;
-  onSave: (field: "bull_case" | "base_case" | "bear_case", value: string) => Promise<void>;
-  disabled?: boolean;
+  onSave: (v: string) => Promise<void>;
+  placeholder?: string;
+  emptyText?: string;
+  editorPrompt?: string;
+  published: boolean;
+  changeNote: string;
+  onChangeNote: (v: string) => void;
+  /** Another member viewing published research: document only, no editing. */
+  readOnly?: boolean;
 }) {
+  const hasValue = value.trim().length > 0;
+  if (readOnly) {
+    return (
+      <div>
+        <div className={s.blockHead}>
+          <span className={s.ownership}><span className={s.ownerDot} aria-hidden /> {ownerLabel.replace(/^Your /, "Author's ")}</span>
+        </div>
+        {hasValue ? <Prose text={value} /> : <p className="qf-secondary">The author didn&apos;t write this section.</p>}
+      </div>
+    );
+  }
+  return <EditableResearchField {...{ id, ownerLabel, stageLabel, value, onSave, placeholder, emptyText, editorPrompt, published, changeNote, onChangeNote }} />;
+}
+
+function EditableResearchField({
+  id, ownerLabel, stageLabel, value, onSave, placeholder, emptyText, editorPrompt, published, changeNote, onChangeNote,
+}: {
+  id: string;
+  ownerLabel: string;
+  stageLabel: string;
+  value: string;
+  onSave: (v: string) => Promise<void>;
+  placeholder?: string;
+  emptyText?: string;
+  editorPrompt?: string;
+  published: boolean;
+  changeNote: string;
+  onChangeNote: (v: string) => void;
+}) {
+  const hasValue = value.trim().length > 0;
+  const [editing, setEditing] = useState(!hasValue);
   const [draft, setDraft] = useState(value);
   const [status, setStatus] = useState<SaveStatus>("idle");
-  const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => { setDraft(value); setStatus("idle"); }, [value]);
+  // Keep in sync with the server (e.g. after an AI answer is added) unless
+  // the user is mid-edit.
+  useEffect(() => {
+    if (!editing) setDraft(value);
+    if (!value.trim()) setEditing(true);
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSave() {
     setStatus("saving");
-    setErr(null);
     try {
-      await onSave(field, draft);
+      await onSave(draft);
       setStatus("saved");
-    } catch (e) {
+      setEditing(!draft.trim());
+    } catch {
       setStatus("error");
-      setErr(e instanceof ApiError ? e.message : "Could not save.");
     }
   }
 
+  const dirty = draft !== value;
+
+  return (
+    <div>
+      <div className={s.blockHead}>
+        <span className={s.ownership}><span className={s.ownerDot} aria-hidden /> {ownerLabel}</span>
+        {!editing && (
+          <button type="button" className={s.linkBtn} onClick={() => { setDraft(value); setEditing(true); setStatus("idle"); }}>
+            Edit<span className={s.srOnly}> {stageLabel}</span>
+          </button>
+        )}
+      </div>
+
+      {!editing ? (
+        <>
+          <Prose text={value} />
+          {status === "saved" && (
+            <p className={`${s.status} ${s.statusOk} mt-3`} role="status">✓ Saved to {stageLabel}</p>
+          )}
+        </>
+      ) : (
+        <>
+          {editorPrompt && <label htmlFor={id} className="qf-card-title block mb-2">{editorPrompt}</label>}
+          {!editorPrompt && <label htmlFor={id} className={s.srOnly}>{ownerLabel} — {stageLabel}</label>}
+          {!hasValue && emptyText && !draft && <p className="qf-secondary mb-2">{emptyText}</p>}
+          <textarea
+            id={id}
+            className={`qf-input ${s.editor}`}
+            value={draft}
+            placeholder={placeholder}
+            onChange={(e) => { setDraft(e.target.value); setStatus("idle"); }}
+          />
+          {published && (
+            <div className="mt-3">
+              <label className="qf-label" htmlFor={`${id}-note`}>Change note for this edit</label>
+              <input id={`${id}-note`} className="qf-input" value={changeNote} onChange={(e) => onChangeNote(e.target.value)} />
+            </div>
+          )}
+          <div className={s.actions}>
+            <button
+              type="button"
+              className="qf-btn-primary"
+              onClick={handleSave}
+              disabled={status === "saving" || !dirty || !draft.trim()}
+              aria-busy={status === "saving"}
+            >
+              {status === "saving" ? "Saving…" : "Save to Research"}
+            </button>
+            {hasValue && (
+              <button type="button" className={s.linkBtn} onClick={() => { setDraft(value); setEditing(false); setStatus("idle"); }}>
+                Cancel
+              </button>
+            )}
+            {status === "error" && (
+              <span className={`${s.status} ${s.statusErr}`} role="alert">Couldn&apos;t save. Please try again.</span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StageRail({ item, activeKey, onSelect }: { item: ResearchFull; activeKey: string; onSelect: (key: string) => void }) {
+  return (
+    <nav aria-label="Research progress">
+      {STAGE_GROUPS.map((group) => (
+        <div key={group.label} className={s.group}>
+          <p className={s.groupLabel}>{group.label}</p>
+          <ol className="grid gap-0.5">
+            {group.keys.map((key) => {
+              const meta = SECTIONS.find((x) => x.key === key);
+              if (!meta) return null;
+              const current = key === activeKey;
+              const done = isSectionFilled(item, meta);
+              const state = current ? (done ? "current, completed" : "current") : done ? "completed" : "upcoming";
+              return (
+                <li key={key}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(key)}
+                    aria-current={current ? "step" : undefined}
+                    className={`${s.stage} ${current ? s.stageCurrent : ""} ${done && !current ? s.stageDone : ""}`}
+                  >
+                    <span
+                      className={`${s.marker} ${done ? s.markerDone : ""} ${current && !done ? s.markerCurrent : ""}`}
+                      aria-hidden
+                    >
+                      {done ? "✓" : ""}
+                    </span>
+                    <span className={s.stageNum}>{meta.n}</span>
+                    <span className="flex-1 min-w-0">{meta.label}</span>
+                    <span className={s.srOnly}>, {state}{meta.derived ? ", assembled from other sections" : ""}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      ))}
+    </nav>
+  );
+}
+
+function InvestmentThesisBody({ item }: { item: ResearchFull }) {
+  const t = deriveInvestmentThesis(item);
+  if (t.isEmpty) {
+    return <p className={s.emptyNote}>Fill in other sections to see your thesis take shape here.</p>;
+  }
+  const list = (title: string, rows: string[]) => rows.length > 0 && (
+    <section className={s.block}>
+      <p className={`${s.blockLabel} mb-2`}>{title}</p>
+      {rows.map((r, i) => <div key={i} className={i ? "mt-3" : ""}><Prose text={r} /></div>)}
+    </section>
+  );
   return (
     <>
-      <textarea className="qf-input min-h-[90px]" value={draft} onChange={(e) => { setDraft(e.target.value); setStatus("idle"); }} disabled={disabled} />
-      {err && <p className="text-sm mt-1" style={{ color: "#9C4B3F" }}>{err}</p>}
-      <div className="flex items-center gap-3 mt-2">
-        <button type="button" className="qf-btn-ghost text-xs" onClick={handleSave} disabled={disabled || status === "saving" || draft === value}>
-          {status === "saving" ? "Saving…" : "Save"}
-        </button>
-        {status === "saved" && <span className="text-xs" style={{ color: "var(--brass)" }}>✓ Saved just now</span>}
-      </div>
+      {t.thesis && (
+        <section className={s.block}>
+          <p className={`${s.blockLabel} mb-2`}>What I believe</p>
+          <Prose text={t.thesis} />
+        </section>
+      )}
+      {list("Why I believe it", t.keyReasons)}
+      {list("Key assumptions", t.keyAssumptions)}
+      {list("Biggest risks", t.keyRisks)}
+      {t.whatWouldProveWrong && (
+        <section className={s.block}>
+          <p className={`${s.blockLabel} mb-2`}>What would prove me wrong?</p>
+          <Prose text={t.whatWouldProveWrong} />
+        </section>
+      )}
     </>
   );
 }
 
-/** Section 11 — Investment Thesis. Read-only, DERIVED entirely from fields
- * the researcher already saved elsewhere — clearly labeled as assembled,
- * not as new or system/AI-generated content (nothing here is AI-generated;
- * the assistant isn't live — see ResearchAssistantPanel). */
-function InvestmentThesisSection({ item }: { item: ResearchFull }) {
-  const t = deriveInvestmentThesis(item);
-  return (
-    <Card>
-      <div className="flex items-center gap-2 mb-1">
-        <label className="qf-label mb-0">11 · Investment Thesis</label>
-        <span className="qf-derived-badge">Derived</span>
-      </div>
-      <p className="text-[11px] text-ink-soft mt-1 mb-3">
-        Assembled automatically from what you&apos;ve written in other sections — not a new field, and not
-        AI-generated. Edit the source section to change what appears here.
-      </p>
-      {t.isEmpty ? (
-        <p className="text-sm text-ink-soft">Fill in other sections to see your thesis take shape here.</p>
-      ) : (
-        <div className="space-y-3">
-          {t.thesis && (
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">What I believe</p>
-              <p className="text-sm mt-0.5">{t.thesis}</p>
-            </div>
-          )}
-          {t.keyReasons.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">Why I believe it</p>
-              <ul className="text-sm mt-0.5 list-disc pl-4 space-y-1">
-                {t.keyReasons.map((r, i) => <li key={i}>{r}</li>)}
-              </ul>
-            </div>
-          )}
-          {t.keyAssumptions.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">Key assumptions</p>
-              <ul className="text-sm mt-0.5 list-disc pl-4 space-y-1">
-                {t.keyAssumptions.map((r, i) => <li key={i}>{r}</li>)}
-              </ul>
-            </div>
-          )}
-          {t.keyRisks.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">Biggest risks</p>
-              <ul className="text-sm mt-0.5 list-disc pl-4 space-y-1">
-                {t.keyRisks.map((r, i) => <li key={i}>{r}</li>)}
-              </ul>
-            </div>
-          )}
-          {t.whatWouldProveWrong && (
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">What would prove me wrong?</p>
-              <p className="text-sm mt-0.5">{t.whatWouldProveWrong}</p>
-            </div>
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}
+/** Review → publish readiness. Mirrors the backend's publish gate
+ * (research/validation.py validate_publish_readiness) so the author can
+ * see and complete every requirement here — sources, disclosures and the
+ * research date had no input anywhere in the workspace before. */
+function PublishChecklist({
+  item, onPatch, onReload, onSelect,
+}: {
+  item: ResearchFull;
+  onPatch: (patch: Record<string, unknown>) => Promise<void>;
+  onReload: () => Promise<void>;
+  onSelect: (key: string) => void;
+}) {
+  const d = item.disclosure;
+  const [label, setLabel] = useState("");
+  const [reference, setReference] = useState("");
+  const [addingSource, setAddingSource] = useState(false);
+  const [conflict, setConflict] = useState<boolean | null>(d.conflict_disclosed);
+  const [conflictDetail, setConflictDetail] = useState(d.conflict_detail ?? "");
+  const [position, setPosition] = useState<boolean | null>(d.position_disclosed);
+  const [positionDetail, setPositionDetail] = useState(d.position_detail ?? "");
+  const [researchDate, setResearchDate] = useState(d.research_date ?? "");
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [sourceError, setSourceError] = useState(false);
 
-/** Section 13 — Review. Read-only completeness overview, DERIVED — never a
- * score or recommendation. Each row is a real jump-to-section control
- * ("Edit Section"), and unfilled functional sections say "Not completed"
- * in words, not just a hollow dot, per the no-color-only-meaning rule. */
-function ReviewSection({ item, onEditSection }: { item: ResearchFull; onEditSection: (key: string) => void }) {
-  const rows = deriveReviewSummary(item);
-  return (
-    <Card>
-      <div className="flex items-center gap-2 mb-1">
-        <label className="qf-label mb-0">13 · Review</label>
-        <span className="qf-derived-badge">Derived</span>
-      </div>
-      <p className="text-[11px] text-ink-soft mt-1 mb-3">
-        A completeness check only — not a score, rating, or recommendation of any kind.
-      </p>
-      <ul className="text-sm divide-y" style={{ borderColor: "var(--line)" }}>
-        {rows.map((r) => (
-          <li key={r.key} className="flex items-center gap-2 py-2">
-            <span aria-hidden style={{ color: r.filled ? "var(--brass)" : "var(--line)" }}>
-              {r.implemented ? (r.filled ? "●" : "○") : "–"}
-            </span>
-            <span className="font-mono text-xs text-ink-soft">{r.n}</span>
-            <span className="flex-1">{r.label}</span>
-            {!r.implemented && <span className="text-[10px] text-ink-soft">soon</span>}
-            {r.implemented && !r.filled && <span className="text-[10px] text-ink-soft">Not completed</span>}
-            {r.implemented && (
-              <button
-                type="button"
-                className="qf-btn-ghost text-[11px]"
-                style={{ padding: "3px 9px" }}
-                onClick={() => onEditSection(r.key)}
-              >
-                Edit Section
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-    </Card>
-  );
-}
+  const checks: { ok: boolean; label: string; go?: string }[] = [
+    { ok: !!item.summary?.trim(), label: "Research question written", go: "question" },
+    { ok: !!item.bear_case?.trim(), label: "Bear case written", go: "scenarios" },
+    { ok: item.sources.length > 0, label: "At least one source" },
+    { ok: d.conflict_disclosed !== null && d.position_disclosed !== null, label: "Conflict and position disclosures answered" },
+    { ok: !!d.research_date, label: "Research date set" },
+  ];
 
-/** Research Brief — orientation only, never a generated investment report.
- * Shows exactly what's actually known (company static data, already-saved
- * research fields) and is explicit about what ISN'T connected, rather than
- * silently omitting it or implying it might exist. No external fetch, no AI
- * call — everything here comes from the `item` already loaded for this page. */
-function ResearchBriefCard({ item }: { item: ResearchFull }) {
+  async function addSource(e: React.FormEvent) {
+    e.preventDefault();
+    if (!label.trim() || !reference.trim()) return;
+    setAddingSource(true);
+    setSourceError(false);
+    try {
+      await api.post(`/research/${item.id}/sources`, { label: label.trim(), reference: reference.trim() });
+      setLabel("");
+      setReference("");
+      await onReload();
+    } catch {
+      setSourceError(true);
+    } finally {
+      setAddingSource(false);
+    }
+  }
+
+  async function saveDisclosures() {
+    setStatus("saving");
+    try {
+      await onPatch({
+        conflict_disclosed: conflict, conflict_detail: conflict ? conflictDetail : "",
+        position_disclosed: position, position_detail: position ? positionDetail : "",
+        research_date: researchDate || null,
+      });
+      setStatus("saved");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  const yesNo = (name: string, value: boolean | null, set: (v: boolean) => void) => (
+    <div role="radiogroup" aria-label={name} className="flex gap-4 mt-1">
+      {[true, false].map((v) => (
+        <label key={String(v)} className="inline-flex items-center gap-2 text-sm" style={{ minHeight: 44 }}>
+          <input type="radio" name={name} checked={value === v} onChange={() => set(v)} />
+          {v ? "Yes" : "No"}
+        </label>
+      ))}
+    </div>
+  );
+
   return (
-    <Card>
-      <div className="flex items-center gap-2 mb-1">
-        <label className="qf-label mb-0">Research Brief</label>
-        <span className="qf-derived-badge">Orientation, not a report</span>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-4 mt-3">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-soft mb-1">Company</p>
-          <p className="text-sm font-semibold">{item.company.name ?? "—"}</p>
-          <p className="text-xs text-ink-soft mt-0.5">
-            {item.company.symbol ?? "No symbol on file"}
-            {item.company.exchange ? ` · ${item.company.exchange}` : ""}
-          </p>
-          {(item.company.sector || item.company.industry) && (
-            <p className="text-xs text-ink-soft mt-0.5">
-              {[item.company.sector, item.company.industry].filter(Boolean).join(" · ")}
-            </p>
-          )}
-          {item.company.description && (
-            <p className="text-xs text-ink-soft mt-2">{item.company.description}</p>
-          )}
-        </div>
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-soft mb-1">Research Question</p>
-          <p className="text-sm">{item.summary || "— not yet written —"}</p>
-        </div>
-      </div>
-      <div className="mt-4 pt-3" style={{ borderTop: "1px dashed var(--line)" }}>
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-soft mb-1.5">Data Availability</p>
-        <p className="text-xs mb-1.5" style={{ color: "var(--down)" }}>Current information source not connected.</p>
-        <ul className="text-xs text-ink-soft space-y-1">
-          <li>Current market data — <span style={{ color: "var(--down)" }}>Not connected</span></li>
-          <li>Recent company developments — <span style={{ color: "var(--down)" }}>Not connected</span></li>
-          <li>Financial data — <span style={{ color: "var(--down)" }}>Not connected</span></li>
+    <>
+      <section className={s.block}>
+        <p className={`${s.blockLabel} mb-2`}>Ready to publish?</p>
+        <ul className="grid gap-1">
+          {checks.map((ch) => (
+            <li key={ch.label} className="flex items-center gap-3 text-sm" style={{ minHeight: 32 }}>
+              <span className={`${s.marker} ${ch.ok ? s.markerDone : ""}`} aria-hidden>{ch.ok ? "✓" : ""}</span>
+              <span className="flex-1">{ch.label}<span className={s.srOnly}>{ch.ok ? " — done" : " — missing"}</span></span>
+              {!ch.ok && ch.go && (
+                <button type="button" className={s.linkBtn} onClick={() => onSelect(ch.go!)}>Open</button>
+              )}
+            </li>
+          ))}
         </ul>
-        <p className="text-[11px] text-ink-soft mt-2">
-          This brief only shows static company information already on file and what you've written yourself —
-          nothing here is fetched live or AI-generated.
+      </section>
+
+      <section className={s.block}>
+        <p className={`${s.blockLabel} mb-2`}>Sources ({item.sources.length})</p>
+        {item.sources.length > 0 && (
+          <ul className="text-sm space-y-1.5 mb-3">
+            {item.sources.map((src) => (
+              <li key={src.id} style={{ overflowWrap: "anywhere" }}>{src.label} — <span className="qf-secondary">{src.reference}</span></li>
+            ))}
+          </ul>
+        )}
+        <form onSubmit={addSource} className="grid gap-2 sm:grid-cols-[1fr_1.4fr_auto] items-end">
+          <div>
+            <label className="qf-label" htmlFor="src-label">Source</label>
+            <input id="src-label" className="qf-input" placeholder="e.g. Annual report FY26" value={label} onChange={(e) => setLabel(e.target.value)} />
+          </div>
+          <div>
+            <label className="qf-label" htmlFor="src-ref">Link or reference</label>
+            <input id="src-ref" className="qf-input" placeholder="https://… or page reference" value={reference} onChange={(e) => setReference(e.target.value)} />
+          </div>
+          <button type="submit" className="qf-btn-ghost" disabled={addingSource || !label.trim() || !reference.trim()}>
+            {addingSource ? "Adding…" : "Add source"}
+          </button>
+        </form>
+        {sourceError && <p className={`${s.status} ${s.statusErr} mt-2`} role="alert">Couldn&apos;t add this source. Try again.</p>}
+        <p className="qf-secondary mt-3" style={{ fontSize: 12 }}>
+          Market data, recent developments and financial data are not connected — this research reflects only
+          company information on file and what you&apos;ve written.
         </p>
-      </div>
-    </Card>
+      </section>
+
+      <section className={s.block}>
+        <p className={`${s.blockLabel} mb-2`}>Disclosures</p>
+        <fieldset>
+          <legend className="text-sm font-semibold">Do you have a conflict of interest with this company?</legend>
+          {yesNo("Conflict of interest", conflict, setConflict)}
+          {conflict && (
+            <>
+              <label className="qf-label mt-2" htmlFor="conflict-detail">Describe the conflict</label>
+              <input id="conflict-detail" className="qf-input" value={conflictDetail} onChange={(e) => setConflictDetail(e.target.value)} />
+            </>
+          )}
+        </fieldset>
+        <fieldset className="mt-4">
+          <legend className="text-sm font-semibold">Do you hold a position in this company?</legend>
+          {yesNo("Position held", position, setPosition)}
+          {position && (
+            <>
+              <label className="qf-label mt-2" htmlFor="position-detail">Describe the position (no amounts required)</label>
+              <input id="position-detail" className="qf-input" value={positionDetail} onChange={(e) => setPositionDetail(e.target.value)} />
+            </>
+          )}
+        </fieldset>
+        <div className="mt-4" style={{ maxWidth: 240 }}>
+          <label className="qf-label" htmlFor="research-date">Research date</label>
+          <input id="research-date" type="date" className="qf-input" value={researchDate} onChange={(e) => setResearchDate(e.target.value)} />
+        </div>
+        <div className={s.actions}>
+          <button
+            type="button"
+            className="qf-btn-primary"
+            onClick={saveDisclosures}
+            disabled={status === "saving" || conflict === null || position === null || !researchDate}
+          >
+            {status === "saving" ? "Saving…" : "Save disclosures"}
+          </button>
+          {status === "saved" && <span className={`${s.status} ${s.statusOk}`} role="status">✓ Disclosures saved</span>}
+          {status === "error" && <span className={`${s.status} ${s.statusErr}`} role="alert">Couldn&apos;t save. Try again.</span>}
+        </div>
+      </section>
+    </>
   );
 }
 
 export default function ResearchWorkspacePage() {
   const { id } = useParams<{ id: string }>();
+  const { session } = useSession();
   const [item, setItem] = useState<ResearchFull | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
 
   const [activeSection, setActiveSection] = useState<string>("question");
-  const [navOpenMobile, setNavOpenMobile] = useState(false);
+  const [railOpenMobile, setRailOpenMobile] = useState(false);
 
-  const [questionDraft, setQuestionDraft] = useState("");
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  const [assistantOpenMobile, setAssistantOpenMobile] = useState(false);
+  const [changeNote, setChangeNote] = useState("");
   const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [postingToCommunity, setPostingToCommunity] = useState(false);
   const [communityPostId, setCommunityPostId] = useState<string | null>(null);
-  const [changeNote, setChangeNote] = useState("");
 
   const load = useCallback(async () => {
-    setError(null);
+    setLoadError(null);
     setNotFound(false);
     try {
-      const data = await api.get<ResearchFull>(`/research/${id}`);
-      setItem(data);
-      setQuestionDraft(data.summary);
+      setItem(await api.get<ResearchFull>(`/research/${id}`));
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        setNotFound(true);
-      } else {
-        setError(err instanceof ApiError ? err.message : "Could not load this research item.");
-      }
+      if (err instanceof ApiError && err.status === 404) setNotFound(true);
+      else setLoadError("We couldn't load this research right now.");
     }
   }, [id]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  // `item.company` (name/symbol/exchange/sector/industry/description) now
-  // comes straight from GET /research/{id} — Research Phase 3. Previously
-  // this page had to separately fetch up to 100 companies and match
-  // `item.company_id` against that list client-side just to show a name;
-  // that workaround is gone.
+  function selectSection(key: string) {
+    setActiveSection(key);
+    setRailOpenMobile(false);
+    if (typeof window !== "undefined" && window.innerWidth < 1024) {
+      document.getElementById("research-document")?.scrollIntoView({ block: "start" });
+    }
+  }
 
   async function patchAndReload(patch: Record<string, unknown>) {
     if (!item) return;
@@ -412,30 +463,16 @@ export default function ResearchWorkspacePage() {
     await load();
   }
 
-  async function handleSaveQuestion() {
-    if (!item) return;
-    setSaveStatus("saving");
-    setSaveError(null);
-    try {
-      const patch: Record<string, unknown> = { summary: questionDraft };
-      if (item.status === "published") patch.change_note = changeNote || "Updated research question.";
-      const updated = await api.patch<{ summary: string }>(`/research/${id}`, patch);
-      setItem((prev) => (prev ? { ...prev, summary: updated.summary ?? questionDraft } : prev));
-      setSaveStatus("saved");
-    } catch (err) {
-      setSaveStatus("error");
-      setSaveError(err instanceof ApiError ? err.message : "Could not save your research question.");
-    }
-  }
-
   async function handlePublish() {
     setPublishing(true);
-    setError(null);
+    setPublishError(null);
     try {
       await api.post(`/research/${id}/publish`, { change_note: changeNote || undefined });
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "This item isn't ready to publish yet.");
+      // Publish validation messages are user-facing guidance (e.g. a missing source).
+      const missing = err instanceof ApiError && err.fields ? Object.keys(err.fields).map((f) => f.replace(/_/g, " ")).join(", ") : "";
+      setPublishError(missing ? `Not ready to publish yet — still needed: ${missing}.` : "This research isn't ready to publish yet.");
     } finally {
       setPublishing(false);
     }
@@ -444,264 +481,301 @@ export default function ResearchWorkspacePage() {
   async function handlePublishToCommunity() {
     if (!item) return;
     setPostingToCommunity(true);
-    setError(null);
+    setPublishError(null);
     try {
       const post = await api.post<{ id: string }>(`/research/${id}/publish-to-community`, { summary: item.summary });
       setCommunityPostId(post.id);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not publish this thesis to the community.");
+    } catch {
+      setPublishError("Couldn't publish this thesis to Community. Try again.");
     } finally {
       setPostingToCommunity(false);
     }
   }
 
   if (notFound) {
-    return <ErrorState message="This research item doesn't exist, or you don't have access to it." onRetry={load} />;
+    return <ErrorState message="This research doesn't exist, or you don't have access to it." onRetry={load} />;
   }
-  if (error) return <ErrorState message={error} onRetry={load} />;
-  if (!item) return <LoadingState label="Loading your research workspace…" />;
+  if (loadError) return <ErrorState message={loadError} onRetry={load} />;
+  if (!item) {
+    return (
+      <div aria-busy="true" aria-label="Loading your research workspace" className="space-y-4 py-2">
+        <div className="qf-skeleton" style={{ height: 14, width: 120 }} />
+        <div className="qf-skeleton" style={{ height: 30, width: "55%" }} />
+        <div className="qf-skeleton" style={{ height: 3, width: "100%" }} />
+        <div className="grid gap-3 pt-4">
+          <div className="qf-skeleton" style={{ height: 18, width: "40%" }} />
+          <div className="qf-skeleton" style={{ height: 120, width: "100%" }} />
+        </div>
+      </div>
+    );
+  }
 
   const progress = computeProgress(item);
-  const activeIndex = SECTIONS.findIndex((s) => s.key === activeSection);
-  const activeMeta = SECTIONS[activeIndex];
-  const prevSection = activeIndex > 0 ? SECTIONS[activeIndex - 1] : null;
+  const activeIndex = SECTIONS.findIndex((x) => x.key === activeSection);
+  const meta: GuidedSection = SECTIONS[activeIndex];
   const nextSection = activeIndex < SECTIONS.length - 1 ? SECTIONS[activeIndex + 1] : null;
-
-  const navList = (
-    <nav aria-label="Research sections" className="space-y-0.5">
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft mb-2 px-2">Research Workspace</p>
-      {SECTIONS.map((s) => (
-        <button
-          key={s.key}
-          type="button"
-          onClick={() => { setActiveSection(s.key); setNavOpenMobile(false); }}
-          aria-current={activeSection === s.key ? "true" : undefined}
-          className="qf-nav-item w-full flex items-center gap-2 text-left text-sm px-2 py-1.5"
-          style={{
-            background: activeSection === s.key ? "rgba(168,134,62,.10)" : undefined,
-            borderLeft: activeSection === s.key ? "2px solid var(--brass)" : "2px solid transparent",
-            color: activeSection === s.key ? "var(--ink)" : "var(--ink-soft)",
-            fontWeight: activeSection === s.key ? 600 : 400,
-          }}
-        >
-          <span className="font-mono text-xs" style={{ color: "var(--ink-soft)" }}>{s.n}</span>
-          <span className="flex-1">{s.label}</span>
-          {s.implemented ? (
-            isSectionFilled(item, s) ? (
-              <span aria-label="Complete" style={{ color: "var(--brass)" }}>●</span>
-            ) : (
-              <span aria-label="Not started" style={{ color: "var(--line)" }}>○</span>
-            )
-          ) : (
-            <span className="text-[10px] text-ink-soft">soon</span>
-          )}
-        </button>
-      ))}
-    </nav>
-  );
+  const published = item.status === "published";
+  // Published research is open to every member (Qfinera is free); only the
+  // author edits. Drafts never reach other members (the API returns 404).
+  const readOnly = !!session && session.user_id !== item.author_id;
+  const fieldProps = { published, changeNote, onChangeNote: setChangeNote, readOnly };
 
   return (
-    <div className="space-y-5">
-      <Card>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <span className="text-xs font-semibold uppercase" style={{ color: "var(--brass)" }}>
-              {item.status}{item.status === "published" ? ` · v${item.current_version}` : ""}
-            </span>
-            <h1 className="font-display text-2xl truncate">{item.title}</h1>
-            <p className="text-sm text-ink-soft">
-              {item.company.name ?? "This company"}
-              {item.company.symbol && <span className="font-mono"> · {item.company.symbol}</span>}
-              {" · "}{item.research_type.replace("_", " ")}
-            </p>
-            <div className="mt-2 pt-2" style={{ borderTop: "1px dashed var(--line)" }}>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-soft">Research Question</p>
-              <p className="text-sm mt-0.5">{item.summary || "— not yet written —"}</p>
-            </div>
-          </div>
-          <div className="text-right text-xs text-ink-soft shrink-0">
-            <div>
-              Research Progress:{" "}
-              <span className="font-semibold" style={{ color: "var(--ink)" }}>
-                {progress.done} / {progress.total} sections completed
-              </span>
-            </div>
-            <div className="mt-1">
-              {saveStatus === "saving" && "Saving…"}
-              {saveStatus === "saved" && "Saved just now"}
-              {saveStatus === "error" && <span style={{ color: "#9C4B3F" }}>Not saved</span>}
-              {saveStatus === "idle" && `Last updated ${new Date(item.updated_at).toLocaleString()}`}
-            </div>
-          </div>
-        </div>
-        <div className="mt-3 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--cream-1)" }}>
+    <div className={`space-y-6 ${s.touch}`}>
+      {/* ---- Header: what company, what research, how far along ---- */}
+      <header className={s.header}>
+        <p className="qf-metadata">
+          {item.company.symbol && <span style={{ color: "var(--ink)", fontWeight: 600 }}>{item.company.symbol}</span>}
+          {item.company.exchange && <> · {item.company.exchange}</>}
+          {" · "}
+          <span style={{ color: published ? "var(--up)" : "var(--brass-dark)" }}>
+            {published ? `Published · v${item.current_version}` : "Draft"}
+          </span>
+          {readOnly && <> · Read-only</>}
+        </p>
+        <h1 className="qf-page-title mt-1.5">{item.company.name ?? item.title}</h1>
+        <p className="qf-secondary mt-0.5">
+          {item.title !== item.company.name && <>{item.title} · </>}
+          {[item.company.sector, item.company.industry].filter(Boolean).join(" · ") || item.research_type.replace("_", " ")}
+        </p>
+        <div className="flex items-center gap-3 mt-4">
           <div
-            className="h-full rounded-full transition-all"
-            style={{ width: `${(progress.done / progress.total) * 100}%`, background: "var(--brass)" }}
-          />
+            className={`${s.progressTrack} flex-1`}
+            role="progressbar"
+            aria-label="Research progress"
+            aria-valuemin={0}
+            aria-valuemax={progress.total}
+            aria-valuenow={progress.done}
+            aria-valuetext={`${progress.done} of ${progress.total} sections completed`}
+          >
+            <div className={s.progressFill} style={{ width: `${(progress.done / progress.total) * 100}%` }} />
+          </div>
+          <span className="qf-metadata shrink-0">{progress.done}/{progress.total} sections</span>
         </div>
-      </Card>
+      </header>
 
-      {item.status === "published" && <ThesisCardFromResearch research={item} companyName={item.company.name ?? "This company"} />}
-
-      <ResearchBriefCard item={item} />
-
-      <div className="md:hidden">
-        <button
-          type="button"
-          className="qf-btn-ghost w-full flex items-center justify-between text-sm"
-          onClick={() => setNavOpenMobile((v) => !v)}
-          aria-expanded={navOpenMobile}
-        >
-          <span>{activeMeta.n} · {activeMeta.label}</span>
-          <span aria-hidden="true">{navOpenMobile ? "▲" : "▼"}</span>
-        </button>
-        {navOpenMobile && <div className="qf-card p-2 mt-1">{navList}</div>}
-      </div>
-
-      <div className="md:flex md:gap-5 md:items-start">
-        <div className="hidden md:block qf-card p-3" style={{ width: 220, flexShrink: 0, position: "sticky", top: 16 }}>
-          {navList}
+      <div className={s.workspace}>
+        {/* ---- LEFT: progress ---- */}
+        <div className={s.railCol}>
+          <div className="lg:hidden">
+            <button
+              type="button"
+              className={s.railToggle}
+              onClick={() => setRailOpenMobile((v) => !v)}
+              aria-expanded={railOpenMobile}
+              aria-controls="research-rail"
+            >
+              <span>
+                <span className={s.stageNum}>{meta.n}</span>{" "}
+                <span className="font-semibold">{meta.label}</span>
+                <span className="qf-secondary"> · {progress.done}/{progress.total} done</span>
+              </span>
+              <span aria-hidden>{railOpenMobile ? "▲" : "▼"}</span>
+            </button>
+          </div>
+          <div id="research-rail" className={`${railOpenMobile ? "block mt-3" : "hidden"} lg:block`}>
+            <StageRail item={item} activeKey={activeSection} onSelect={selectSection} />
+          </div>
         </div>
 
-        <div className="flex-1 min-w-0 space-y-4">
-          {activeSection === "question" && (
-            <Card>
-              <label className="qf-label" htmlFor="research-question">01 · Research Question</label>
-              <p className="text-xs text-ink-soft mb-2">
-                What are you trying to understand? This becomes your research&apos;s public summary once published.
-              </p>
-              <ul className="text-xs text-ink-soft mb-3 list-disc pl-4 space-y-0.5">
-                <li>What is driving this company&apos;s growth?</li>
-                <li>Can the business sustain its current margins?</li>
-                <li>What are the biggest risks to the thesis?</li>
-              </ul>
-              <textarea
-                id="research-question"
-                className="qf-input min-h-[110px]"
-                value={questionDraft}
-                onChange={(e) => { setQuestionDraft(e.target.value); setSaveStatus("idle"); }}
-                placeholder="e.g. Is this business capable of sustaining growth without eroding margins?"
-              />
-              {item.status === "published" && (
-                <div className="mt-3">
-                  <label className="qf-label" htmlFor="change-note">Change note (required to re-publish edits)</label>
-                  <input id="change-note" className="qf-input" value={changeNote} onChange={(e) => setChangeNote(e.target.value)} />
-                </div>
-              )}
-              {saveError && <p className="text-sm mt-2" style={{ color: "#9C4B3F" }}>{saveError}</p>}
-              <div className="flex items-center gap-3 mt-3">
-                <button
-                  type="button"
-                  className="qf-btn-primary"
-                  onClick={handleSaveQuestion}
-                  disabled={saveStatus === "saving" || !questionDraft.trim() || questionDraft === item.summary}
-                >
-                  {saveStatus === "saving" ? "Saving…" : "Save"}
+        {/* ---- CENTER: the research document ---- */}
+        <article id="research-document" className={s.document} aria-labelledby="stage-title" style={{ scrollMarginTop: 16 }}>
+          <p className={s.eyebrow}>{meta.n} · {meta.label}</p>
+          <h2 id="stage-title" className={s.stageTitle}>
+            {meta.key === "question" ? (readOnly ? "Research question" : "What are you trying to understand?") : meta.label}
+          </h2>
+          <p className={s.stagePurpose}>
+            {readOnly && meta.key === "question" ? "The question that guides this research." : STAGE_PURPOSE[meta.key]}
+          </p>
+          {meta.derived && (
+            <p className="mt-2"><span className="qf-derived-badge">Assembled from {readOnly ? "the author's" : "your"} sections · read-only</span></p>
+          )}
+          {readOnly ? (
+            <p className="qf-secondary mt-2" style={{ fontSize: 13 }}>
+              You&apos;re reading another member&apos;s published research. It documents their reasoning — not a
+              recommendation to buy or sell.
+            </p>
+          ) : (
+            <a href="#research-assistant" className={`${s.linkBtn} inline-flex items-center mt-2 xl:hidden`} style={{ paddingLeft: 0 }}>
+              Ask the Research Assistant ↓
+            </a>
+          )}
+
+          <div className="mt-6">
+            {meta.key !== "question" && item.summary && (
+              <section className={s.block}>
+                <p className={`${s.blockLabel} mb-1.5`}>Guiding this research</p>
+                <p className="qf-secondary" style={{ fontSize: 14 }}>{item.summary}</p>
+              </section>
+            )}
+
+            {meta.key === "question" && (
+              <section className={s.block}>
+                <ResearchField
+                  key="question"
+                  id="field-question"
+                  ownerLabel="Your research question"
+                  stageLabel="Research Question"
+                  value={item.summary ?? ""}
+                  onSave={(v) => patchAndReload({ summary: v })}
+                  placeholder="e.g. Can this business sustain growth without eroding margins?"
+                  emptyText="Examples: What is driving this company's growth? Can it sustain its current margins? What are the biggest risks?"
+                  {...fieldProps}
+                />
+              </section>
+            )}
+
+            {meta.field && meta.key !== "question" && meta.key !== "scenarios" && (
+              <>
+                {meta.question && (
+                  <section className={s.block}>
+                    <p className={`${s.blockLabel} mb-2`}>Research question</p>
+                    <p className={s.guideQuestion}>{meta.question}</p>
+                    {meta.guidance && (
+                      <ul className={s.guidance} aria-label="What to investigate">
+                        {meta.guidance.map((g) => <li key={g}>{g}</li>)}
+                      </ul>
+                    )}
+                  </section>
+                )}
+                <section className={s.block}>
+                  <ResearchField
+                    key={meta.key}
+                    id={`field-${meta.key}`}
+                    ownerLabel="Your findings"
+                    stageLabel={meta.label}
+                    value={(item[meta.field] as string) ?? ""}
+                    onSave={(v) => patchAndReload({ [meta.field as string]: v })}
+                    placeholder={meta.placeholder}
+                    emptyText="Nothing saved yet. Write your own findings, or ask the Research Assistant and add what's useful."
+                    {...fieldProps}
+                  />
+                </section>
+              </>
+            )}
+
+            {meta.key === "scenarios" && (
+              <>
+                {([
+                  ["bull_case", "Bull case", "What happens if things go better than expected?"],
+                  ["base_case", "Base case", "What happens under your central assumptions?"],
+                  ["bear_case", "Bear case", "What happens if things go worse than expected?"],
+                ] as const).map(([field, title, prompt]) => (
+                  <section key={field} className={s.block}>
+                    <p className="qf-section-title mb-1">{title}</p>
+                    <p className="qf-secondary mb-3">{prompt}</p>
+                    <ResearchField
+                      id={`field-${field}`}
+                      ownerLabel="Your scenario"
+                      stageLabel={title}
+                      value={item[field] ?? ""}
+                      onSave={(v) => patchAndReload({ [field]: v })}
+                      {...fieldProps}
+                    />
+                  </section>
+                ))}
+                <p className="qf-secondary">No probabilities or expected returns are assigned — none is marked correct.</p>
+              </>
+            )}
+
+            {meta.key === "thesis" && <InvestmentThesisBody item={item} />}
+
+            {meta.key === "review" && (
+              <>
+                <section className={s.block}>
+                  <p className={`${s.blockLabel} mb-2`}>Completeness</p>
+                  <p className="qf-secondary mb-2">A completeness check only — not a score, rating, or recommendation.</p>
+                  <ul>
+                    {deriveReviewSummary(item).map((r) => (
+                      <li key={r.key} className="flex items-center gap-3 py-1.5" style={{ borderBottom: "1px solid var(--line)" }}>
+                        <span className={`${s.marker} ${r.filled ? s.markerDone : ""}`} aria-hidden>{r.filled ? "✓" : ""}</span>
+                        <span className={s.stageNum}>{r.n}</span>
+                        <span className="flex-1 text-sm">{r.label}</span>
+                        <span className="qf-secondary" style={{ fontSize: 12 }}>{r.filled ? "Complete" : "Not completed"}</span>
+                        <button type="button" className={s.linkBtn} onClick={() => selectSection(r.key)}>
+                          {readOnly ? "View" : r.filled ? "Edit" : "Open"}<span className={s.srOnly}> {r.label}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+
+                {readOnly && item.sources.length > 0 && (
+                  <section className={s.block}>
+                    <p className={`${s.blockLabel} mb-2`}>Sources ({item.sources.length})</p>
+                    <ul className="text-sm space-y-1.5">
+                      {item.sources.map((src) => (
+                        <li key={src.id} style={{ overflowWrap: "anywhere" }}>{src.label} — <span className="qf-secondary">{src.reference}</span></li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                {!readOnly && <PublishChecklist item={item} onPatch={patchAndReload} onReload={load} onSelect={selectSection} />}
+
+                {!readOnly && <section className={s.block}>
+                  <p className={`${s.blockLabel} mb-2`}>Publish</p>
+                  <p className="qf-secondary mb-3">
+                    Publishing locks in a versioned copy of your research. You can then publish it as a thesis to
+                    Community, where your research question becomes the thesis summary and others can challenge
+                    the reasoning.
+                  </p>
+                  {item.summary && (
+                    <blockquote className="mb-4 pl-3" style={{ borderLeft: "2px solid var(--brass)" }}>
+                      <p className={s.prose}>{item.summary}</p>
+                    </blockquote>
+                  )}
+                  {published && <div className="mb-4"><ThesisCardFromResearch research={item} companyName={item.company.name ?? "This company"} /></div>}
+                  {published && (
+                    <div className="mb-3">
+                      <label className="qf-label" htmlFor="change-note">Change note (required to re-publish edits)</label>
+                      <input id="change-note" className="qf-input" value={changeNote} onChange={(e) => setChangeNote(e.target.value)} />
+                    </div>
+                  )}
+                  {publishError && <p className={`${s.status} ${s.statusErr} mb-3`} role="alert">{publishError}</p>}
+                  <div className={s.actions}>
+                    <button className="qf-btn-gold" onClick={handlePublish} disabled={publishing}>
+                      {publishing ? "Publishing…" : published ? "Re-publish" : "Publish Research"}
+                    </button>
+                    {published && !communityPostId && (
+                      <button className="qf-btn-primary" onClick={handlePublishToCommunity} disabled={postingToCommunity}>
+                        {postingToCommunity ? "Publishing thesis…" : "Publish Thesis to Community"}
+                      </button>
+                    )}
+                    {communityPostId && (
+                      <a href={`/community/${communityPostId}`} className="qf-btn-primary" style={{ textDecoration: "none" }}>
+                        View Thesis in Community →
+                      </a>
+                    )}
+                  </div>
+                </section>}
+              </>
+            )}
+
+            {nextSection && (
+              <div className={s.nextStep}>
+                <span className="qf-secondary self-center">
+                  {isSectionFilled(item, meta) ? "This stage has content." : "Investigate next when you're ready."}
+                </span>
+                <button type="button" className={s.linkBtn} onClick={() => selectSection(nextSection.key)}>
+                  Next: {nextSection.label} →
                 </button>
-                {saveStatus === "saved" && <span className="text-xs" style={{ color: "var(--brass)" }}>✓ Saved just now</span>}
               </div>
-            </Card>
-          )}
-
-          {activeMeta.implemented && activeMeta.field && activeMeta.key !== "scenarios" && (
-            <TextFieldSection
-              key={activeMeta.key}
-              meta={activeMeta}
-              value={(item[activeMeta.field] as string) ?? ""}
-              onSave={(v) => patchAndReload({ [activeMeta.field as string]: v })}
-            />
-          )}
-
-          {activeMeta.key === "scenarios" && (
-            <ScenarioSection
-              item={item}
-              onSave={(field, value) => patchAndReload({ [field]: value })}
-            />
-          )}
-
-          {activeMeta.key === "thesis" && <InvestmentThesisSection item={item} />}
-          {activeMeta.key === "review" && <ReviewSection item={item} onEditSection={setActiveSection} />}
-
-          {!activeMeta.implemented && (
-            <Card>
-              <label className="qf-label">{activeMeta.n} · {activeMeta.label}</label>
-              <div className="mt-3 py-8 text-center">
-                <p className="text-sm text-ink-soft">This section is not yet available.</p>
-                <p className="text-xs text-ink-soft mt-1">
-                  Coming later — this section needs a data-model decision before it can be built.
-                </p>
-              </div>
-            </Card>
-          )}
-
-          <div className="flex items-center justify-between pt-2">
-            <button
-              type="button"
-              className="qf-btn-ghost text-sm"
-              disabled={!prevSection}
-              onClick={() => prevSection && setActiveSection(prevSection.key)}
-            >
-              ← {prevSection ? prevSection.label : "Previous"}
-            </button>
-            <button
-              type="button"
-              className="qf-btn-ghost text-sm"
-              disabled={!nextSection}
-              onClick={() => nextSection && setActiveSection(nextSection.key)}
-            >
-              {nextSection ? nextSection.label : "Next"} →
-            </button>
+            )}
           </div>
-        </div>
+        </article>
 
-        <div className="hidden lg:block">
-          <ResearchAssistantPanel researchId={item.id} currentQuestion={item.summary} onStageChange={setActiveSection} />
-        </div>
-      </div>
-
-      <div className="lg:hidden">
-        <button
-          type="button"
-          className="qf-btn-ghost w-full text-sm"
-          onClick={() => setAssistantOpenMobile((v) => !v)}
-          aria-expanded={assistantOpenMobile}
-        >
-          Research Assistant {assistantOpenMobile ? "▲" : "▼"}
-        </button>
-        {assistantOpenMobile && (
-          <div className="mt-2">
-            <ResearchAssistantPanel researchId={item.id} currentQuestion={item.summary} onStageChange={setActiveSection} />
+        {/* ---- RIGHT: contextual assistant ---- */}
+        {!readOnly && (
+          <div id="research-assistant" className={s.assistantCol} style={{ scrollMarginTop: 16 }}>
+            <ResearchAssistantPanel
+              researchId={item.id}
+              activeSectionKey={activeSection}
+              isDraft={!published}
+              onStageChange={selectSection}
+              onAdded={load}
+            />
           </div>
-        )}
-      </div>
-
-      <Card>
-        <label className="qf-label">Sources ({item.sources.length})</label>
-        {item.sources.length === 0 ? (
-          <p className="text-sm text-ink-soft">At least one source is required to publish.</p>
-        ) : (
-          <ul className="text-sm space-y-1">
-            {item.sources.map((s) => <li key={s.id}>{s.label} — {s.reference}</li>)}
-          </ul>
-        )}
-      </Card>
-
-      {error && <p className="text-sm" style={{ color: "#9C4B3F" }}>{error}</p>}
-
-      <div className="flex gap-3 flex-wrap">
-        <button className="qf-btn-gold" onClick={handlePublish} disabled={publishing}>
-          {publishing ? "Publishing…" : item.status === "published" ? "Re-publish" : "Publish"}
-        </button>
-        {item.status === "published" && !communityPostId && (
-          <button className="qf-btn-primary" onClick={handlePublishToCommunity} disabled={postingToCommunity}>
-            {postingToCommunity ? "Sharing…" : "Share to Community"}
-          </button>
-        )}
-        {communityPostId && (
-          <a href={`/community/${communityPostId}`} className="qf-btn-primary">
-            View in Community →
-          </a>
         )}
       </div>
     </div>

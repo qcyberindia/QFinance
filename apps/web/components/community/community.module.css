@@ -1,0 +1,164 @@
+/* Community — scoped styles. Qfinera tokens from app/globals.css only. */
+
+.page { max-width: 720px; margin: 0 auto; }
+
+/* ---- Pillar tabs ---- */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab {
+  position: relative;
+  min-height: 44px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: color var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) var(--motion-ease);
+}
+.tab:hover { color: var(--ink); background: var(--cream-1); }
+.tab:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+.tabActive { color: var(--ink); font-weight: 600; }
+.tabActive::after {
+  content: "";
+  position: absolute;
+  left: 10px; right: 10px; bottom: -1px;
+  height: 2px;
+  background: var(--brass);
+  border-radius: 2px;
+}
+.pillarIntro { padding: 14px 0 4px; font-size: 13.5px; color: var(--ink-soft); line-height: 1.55; }
+
+/* ---- Composer ---- */
+.composer { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.composerPrompt {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 14px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--cream-0);
+  color: var(--ink-soft);
+  font-size: 14px;
+  transition: border-color var(--motion-fast) var(--motion-ease);
+}
+.composerPrompt:hover { border-color: var(--brass); }
+.composerPrompt:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+.typeSwitch { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.typeOption {
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background: transparent;
+}
+.typeOption + .typeOption { border-left: 1px solid var(--line); }
+.typeOption[aria-checked="true"] { background: var(--ink); color: var(--cream-0); }
+.typeOption:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+
+/* ---- Post row ---- */
+.post { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.postThesis { padding-left: 16px; border-left: 2px solid var(--brass); margin-left: -18px; padding-right: 0; }
+@media (max-width: 767px) { .postThesis { margin-left: 0; padding-left: 12px; } }
+.meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12.5px; color: var(--ink-soft); }
+.author { font-weight: 600; color: var(--ink); }
+.typeLabel {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.typeDiscussion { color: var(--ink-soft); }
+.typeQuestion { color: var(--info); }
+.typeThesis { color: var(--brass-dark); }
+.postLink { display: block; border-radius: var(--radius-sm); color: inherit; text-decoration: none; }
+@media (max-width: 767px) { .postLink { min-height: 44px; } }
+.postLink:focus-visible { outline: 2px solid var(--brass); outline-offset: 4px; }
+.postLink:hover .postTitle { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.subject { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--ink-soft); letter-spacing: 0.02em; margin-top: 8px; }
+.postTitle { font-family: 'Fraunces', serif; font-weight: 600; font-size: 18px; line-height: 1.35; margin-top: 4px; color: var(--ink); }
+.postBody { font-size: 14.5px; line-height: 1.65; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.clamp { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+
+.actions { display: flex; align-items: center; gap: 4px; margin-top: 10px; margin-left: -8px; }
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  transition: color var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) var(--motion-ease);
+}
+@media (max-width: 767px) { .action { min-height: 44px; min-width: 44px; justify-content: center; } }
+.action:hover { color: var(--ink); background: var(--cream-1); }
+.action:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }
+.actionOn { color: var(--brass-dark); }
+.menu {
+  position: absolute; right: 0; top: 100%; z-index: 10; min-width: 140px;
+  background: var(--cream-0); border: 1px solid var(--line); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md); padding: 4px;
+}
+.menuItem {
+  display: block; width: 100%; text-align: left; min-height: 40px; padding: 8px 12px;
+  font-size: 13px; border-radius: var(--radius-sm); color: var(--ink);
+}
+.menuItem:hover, .menuItem:focus-visible { background: var(--cream-1); outline: none; }
+.menuDanger { color: var(--down); }
+
+.loadMore { display: flex; justify-content: center; padding: 20px 0; }
+
+/* ---- Thesis document (detail) ---- */
+.eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--brass-dark); font-weight: 600; }
+.docTitle { font-family: 'Fraunces', serif; font-weight: 600; font-size: clamp(24px, 3.4vw, 32px); line-height: 1.2; margin-top: 6px; }
+.docSection { padding: 20px 0; border-top: 1px solid var(--line); }
+.docLabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; color: var(--ink-soft); margin-bottom: 8px; }
+.docSub { font-weight: 600; font-size: 14px; margin: 14px 0 4px; }
+.docLabel + div > .docSub { margin-top: 0; }
+.prose { font-size: 15px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.challenge {
+  background: var(--cream-1);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--brass);
+  border-radius: var(--radius-md);
+  padding: 18px;
+}
+.notice { font-size: 12.5px; color: var(--ink-soft); line-height: 1.55; }
+
+/* ---- Thread ---- */
+.thread { margin-top: 8px; }
+.comment { padding-top: 14px; }
+.nested { margin-left: 14px; padding-left: 14px; border-left: 1px solid var(--line); }
+@media (min-width: 768px) { .nested { margin-left: 18px; } }
+.replyBtn {
+  min-height: 36px; padding: 6px 8px; margin-left: -8px; font-size: 12.5px; font-weight: 600;
+  color: var(--brass-dark); border-radius: var(--radius-sm);
+}
+@media (max-width: 767px) { .replyBtn { min-height: 44px; } }
+.replyBtn:hover { background: var(--cream-1); }
+.replyBtn:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }
+
+.srOnly {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+@media (max-width: 767px) {
+  .touch :global(.qf-btn-primary),
+  .touch :global(.qf-btn-ghost),
+  .touch :global(.qf-btn-gold) { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab, .action, .composerPrompt { transition: none; }
+}

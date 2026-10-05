@@ -6,21 +6,17 @@
  * existing, already-built backend endpoints only: `GET /research/library`
  * (default browse) and `GET /research/search?q=` (search box below) — no
  * new backend route, no new schema, no duplicate of `/research/mine`.
- * Tier gating (`preview: true` items) is decided entirely server-side
- * (`research/service.py`); this page only renders whichever shape it gets.
+ * Qfinera is free: every published item is fully readable by members —
+ * there is no paid tier or preview/teaser shape.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api-client";
-import type { LibraryItem, LibraryListResponse, LibraryPreviewItem } from "@/lib/types";
+import type { LibraryItem, LibraryListResponse } from "@/lib/types";
 import { Card, EmptyState, ErrorState, LoadingState } from "@/components/states";
 
-function isFullItem(item: LibraryItem | LibraryPreviewItem): item is LibraryItem {
-  return item.preview !== true;
-}
-
 export default function ResearchExplorePage() {
-  const [items, setItems] = useState<(LibraryItem | LibraryPreviewItem)[] | null>(null);
+  const [items, setItems] = useState<LibraryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -99,44 +95,19 @@ export default function ResearchExplorePage() {
       {!error && items !== null && items.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-2">
           {items.map((item) => {
-            const full = isFullItem(item);
-            const content = (
-              <Card className="qf-clickable h-full flex flex-col">
-                <div className="flex items-center justify-between mb-1 gap-2">
-                  <span className="text-xs text-ink-soft truncate">
-                    {full ? (item.company.name ?? "Unknown company") : "Core research"}
-                  </span>
-                  {item.access_tier === "core" && !full && (
-                    <span
-                      className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full shrink-0"
-                      style={{ border: "1px solid var(--brass)", color: "var(--brass-dark)" }}
-                    >
-                      Core
-                    </span>
-                  )}
-                </div>
-                <div className="font-display text-base">{item.title}</div>
-                <p className="text-sm text-ink-soft line-clamp-2 flex-1">{item.summary}</p>
-                {full && (
+            return (
+              <Link key={item.id} href={`/research/${item.id}`} className="block">
+                <Card className="qf-clickable h-full flex flex-col">
+                  <span className="text-xs text-ink-soft truncate mb-1">{item.company.name ?? "Unknown company"}</span>
+                  <div className="font-display text-base">{item.title}</div>
+                  <p className="text-sm text-ink-soft line-clamp-2 flex-1">{item.summary}</p>
                   <p className="text-xs text-ink-soft mt-2">
                     {item.author.username ?? "Member"} · {item.source_count} source{item.source_count === 1 ? "" : "s"}
                     {item.industry ? ` · ${item.industry}` : ""}
                   </p>
-                )}
-                {full && (
                   <p className="text-xs mt-2 font-semibold" style={{ color: "var(--brass-dark)" }}>Open →</p>
-                )}
-              </Card>
-            );
-            // A preview item has no route this viewer is entitled to open
-            // (GET /research/{id} would 404/403 for them server-side) — it
-            // renders as a non-interactive teaser, not a misleading link.
-            return full ? (
-              <Link key={item.id} href={`/research/${item.id}`} className="block">
-                {content}
+                </Card>
               </Link>
-            ) : (
-              <div key={item.id}>{content}</div>
             );
           })}
         </div>

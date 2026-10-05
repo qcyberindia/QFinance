@@ -52,7 +52,9 @@ class Research(Base):
     industry: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
     moderation_status: Mapped[str] = mapped_column(String, nullable=False, default="active")
-    access_tier: Mapped[str] = mapped_column(String, nullable=False, default="core")  # AD-18
+    # Legacy AD-18 paid-tier column. Inert: never read or exposed (Qfinera is
+    # free). Kept only to avoid a schema migration.
+    access_tier: Mapped[str] = mapped_column(String, nullable=False, default="core")
     title: Mapped[str] = mapped_column(Text, nullable=False, default=PLACEHOLDER_TITLE)  # AD-16
     summary: Mapped[str] = mapped_column(Text, nullable=False, default=PLACEHOLDER_SUMMARY)  # AD-16
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

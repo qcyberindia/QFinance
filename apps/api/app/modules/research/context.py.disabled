@@ -1,0 +1,101 @@
+"""Research AI Context — a plain data assembly, NOT a fourth AI/database
+architecture (Research Phase 3, per explicit direction: "Build the Research
+AI Context as a service/data object, NOT another database architecture").
+
+Deliberately does not persist anything of its own and has no table. It reads
+already-persisted `Research`/`Company`/`ResearchSource` rows and reshapes
+them into the flat structure a future `research/{id}/ai/ask` endpoint would
+need — that endpoint is explicitly NOT implemented in this pass; nothing
+here makes a live AI call, and nothing here touches `app.modules.ai` beyond
+using it as the one authoritative place a caller would separately fetch a
+decrypted key from (this file never does that itself).
+
+`build_ai_context()` is a pure function over already-loaded, plain data
+(a `Research` ORM object + the `company` dict shape `_load_author_and_company`
+already produces) so it is testable with zero database access — the async
+`get_ai_context()` wrapper below is the only piece that touches `db`, and it
+is a thin fetch-then-call shim, matching this module's own
+`get_research_view` pattern.
+
+NEVER included, structurally (checked by test_research_context.py, not just
+by convention): API keys, encrypted API keys, email, real name, any other
+private profile field, broker credentials, session secrets. The only
+identity-shaped fields anywhere in the output are `research_id`/`company_id`
+(opaque UUIDs already public within the research item itself) — no
+`author_id`, no `user_id`, no `username`, on purpose: an AI context object
+answering "what is this research about" has no legitimate need for who is
+asking, and omitting it entirely is simpler to keep safe than including it
+and remembering to redact it at every future call site.
+"""
+import uuid
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.modules.research.models import EXTENDED_SECTION_FIELDS, QRES_STAGE_FIELDS, Research, ResearchSource
+
+
+def build_ai_context(research: Research, *, company: dict, sources: list[ResearchSource]) -> dict:
+    """Pure — no I/O. `company` is the dict shape produced by
+    `service._load_author_and_company` (id/name/symbol/exchange/sector/
+    industry/description); `sources` are this research item's own
+    `ResearchSource` rows (used only for `saved_findings`' evidence labels,
+    never their raw reference text, since that could be an arbitrary URL a
+    future prompt-construction step should treat as untrusted content, not
+    something this pass needs to make a judgment call about)."""
+    stage_values = {f: getattr(research, f) for f in QRES_STAGE_FIELDS}
+    extended_values = {f: getattr(research, f) for f in EXTENDED_SECTION_FIELDS}
+
+    def _filled(value: str | None) -> bool:
+        return bool(value) and value.strip() != ""
+
+    saved_findings = {
+        field: value for field, value in {**stage_values, **extended_values}.items()
+        if field not in ("risk_register", "invalidation_conditions") and _filled(value)
+    }
+
+    return {
+        "research_id": str(research.id),
+        "subject_type": "STOCK",
+        "company_id": company["id"],
+        "company_name": company["name"],
+        "symbol": company["symbol"],
+        "exchange": company["exchange"],
+        "sector": company["sector"],
+        "industry": company["industry"],
+        "description": company["description"],
+        "research_question": research.title,
+        "current_stage": research.status,
+        # No separate "previous questions" log exists yet (that would be the
+        # unwired `research_ai.research_context_entries` table's job, and per
+        # explicit direction this pass does not wire that table in) — an
+        # empty list is the honest current answer, not a guess.
+        "previous_questions": [],
+        "saved_findings": saved_findings,
+        "user_notes": extended_values.get("management_notes"),
+        "assumptions": extended_values.get("assumptions_outlook"),
+        "risks": stage_values.get("risk_register"),
+        "invalidation_conditions": stage_values.get("invalidation_conditions"),
+    }
+
+
+async def get_ai_context(db: AsyncSession, research_id: uuid.UUID, *, actor_id: uuid.UUID) -> dict:
+    """Thin fetch-then-call shim. Author-only, like every other mutating/
+    private-content accessor in research/service.py (`_require_author`) —
+    `saved_findings`/`user_notes`/`assumptions`/`risks` can include an
+    unpublished draft's private thinking, not just public research-item
+    fields, so this is not treated as a public-visibility read the way
+    `get_research_view` is for a published item.
+
+    Deliberately imported here rather than at module top to avoid
+    research/service.py <-> research/context.py forming a circular import
+    (service.py may reasonably want to call this too, in a future pass, for
+    a real /ai/ask endpoint)."""
+    from app.modules.research import service as research_service
+
+    research = await research_service.get_research_or_404(db, research_id)
+    research_service._require_author(research, actor_id)
+    _, company = await research_service._load_author_and_company(
+        db, author_id=research.author_id, company_id=research.company_id,
+    )
+    sources = await research_service._load_sources(db, research_id)
+    return build_ai_context(research, company=company, sources=sources)

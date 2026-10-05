@@ -128,8 +128,8 @@ class CompanyRef(BaseModel):
 
 
 class ResearchFullResponse(BaseModel):
-    """§7.1.2 full representation — returned to author, MODERATOR+, or any
-    caller once access_tier/tier-gating rules permit it (see router.py)."""
+    """§7.1.2 full representation — returned to the author/staff for drafts
+    and to any member for published research (Qfinera is free; no tiers)."""
     id: str
     author_id: str
     company_id: str
@@ -139,7 +139,6 @@ class ResearchFullResponse(BaseModel):
     industry: str | None
     status: str
     moderation_status: str
-    access_tier: str
     title: str
     summary: str
     current_version: int
@@ -171,16 +170,6 @@ class AuthorRef(BaseModel):
     `username` is the only public identity a research item's author has."""
     id: str
     username: str | None = None
-
-
-class ResearchPreviewResponse(BaseModel):
-    """§7.1.2 — FREE caller viewing a 'core' access_tier published item."""
-    preview: bool = True
-    id: str
-    title: str
-    author: AuthorRef
-    summary: str
-    access_tier: str = "core"
 
 
 class PublishResponse(BaseModel):
@@ -224,24 +213,13 @@ class LibraryItem(BaseModel):
     tags: list[str]
     source_count: int
     current_version: int
-    access_tier: str
-    preview: bool = False
 
 
 class LibraryListResponse(BaseModel):
-    items: list[LibraryItem | ResearchPreviewResponse]
+    items: list[LibraryItem]
     page: int
     page_size: int
     total: int
-
-
-class AccessTierUpdateRequest(BaseModel):
-    access_tier: str
-
-
-class AccessTierUpdateResponse(BaseModel):
-    id: str
-    access_tier: str
 
 
 class MyResearchItem(BaseModel):

@@ -1,28 +1,29 @@
 "use client";
 
 /**
- * STAGE-KEY BUG FIXED this pass: this file previously carried a
- * `FIELD_TO_SECTION_KEY` translation, on the assumption that `POST
- * /research/{id}/ai/ask`'s `current_stage` was a raw DB column name (e.g.
- * "business_model"). That was true at the time it was written, but
- * research/ai_context.py was fixed in an earlier pass to return a clean
+ * Research Assistant — the contextual AI column of the Research workspace.
+ *
+ * STAGE KEYS: `POST /research/{id}/ai/ask` returns `current_stage` as a clean
  * SECTION KEY (e.g. "business") via research/sections.py's
  * `current_stage_key()` — the same keys `ADD_TO_RESEARCH_STAGES` and this
- * file's own `STAGE_QUESTIONS` already use. The translation map was solving
- * a problem that no longer existed, and its lookup returned `undefined` for
- * every real value (`FIELD_TO_SECTION_KEY["business"]` is not one of its
- * keys), so "Add to Research" was unconditionally disabled for every
- * answer — confirmed by reading research/ai_context.py fresh, not assumed.
- * Removed: `answer.current_stage` is used directly as the section key now.
+ * file's `STAGE_QUESTIONS` use, so `answer.current_stage` is used directly.
  *
- * CSRF/auth: unchanged — both calls go through the same shared `api` client
- * every other mutating request in this app already uses (session cookie +
- * X-CSRF-Token attached automatically).
+ * CONTEXT: the panel follows the document's active section
+ * (`activeSectionKey`) for its header and suggested questions. Add to
+ * Research still targets the stage the backend reported for the answer
+ * (unchanged behavior) — and the button names that destination explicitly,
+ * so the user knows where the text will land before clicking.
+ *
+ * AI answers are never saved automatically: only the explicit Add to
+ * Research action persists one.
+ *
+ * CSRF/auth: unchanged — both calls go through the shared `api` client
+ * (session cookie + X-CSRF-Token attached automatically).
  */
 import { useEffect, useState } from "react";
-import { api, ApiError } from "@/lib/api-client";
-import { Card } from "@/components/states";
-import { SECTIONS } from "@/lib/research-progress";
+import { api } from "@/lib/api-client";
+import { SECTIONS, STAGE_PURPOSE } from "@/lib/research-progress";
+import s from "@/components/research/research.module.css";
 
 interface AiConnection {
   connected: boolean;
@@ -40,11 +41,8 @@ interface AiAnswer {
 }
 
 /** Stage-specific suggested questions, keyed by the SAME section keys
- * `answer.current_stage` and `ADD_TO_RESEARCH_STAGES` both use (see module
- * docstring). This map's key set IS the addable-stage set on the frontend
- * side — there is no separate `ADD_TO_RESEARCH_STAGES` mirror needed here
- * beyond it, since checking `stage in STAGE_QUESTIONS` answers the same
- * question research/sections.py's dict answers server-side. */
+ * `answer.current_stage` and `ADD_TO_RESEARCH_STAGES` both use. This map's
+ * key set IS the addable-stage set on the frontend side. */
 const STAGE_QUESTIONS: Record<string, string[]> = {
   business: [
     "How does this company actually make money?",
@@ -99,35 +97,41 @@ const DEFAULT_QUESTIONS = [
   "How does this company's margin trend compare to its own history?",
 ];
 
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  openai_compatible: "OpenAI-Compatible",
+};
+
+const labelOf = (key: string) => SECTIONS.find((x) => x.key === key)?.label ?? key;
+
 export function ResearchAssistantPanel({
   researchId,
-  currentQuestion,
+  activeSectionKey,
+  isDraft = true,
   onStageChange,
+  onAdded,
 }: {
   researchId: string;
-  currentQuestion: string;
-  /** Optional: lets the panel move the document to the section it just
-   * continued to, so the two stay in sync. The panel works fine without it
-   * (Continue Research still updates its own suggested questions either
-   * way) — kept optional so this isn't a required prop change everywhere
-   * else the panel might be used. */
+  /** The document's active section — drives the header and suggestions. */
+  activeSectionKey: string;
+  /** Add to Research only writes to drafts (backend rule); published research
+   * shows an explanation instead of a button that would fail. */
+  isDraft?: boolean;
+  /** Moves the document to the section Continue advanced to. */
   onStageChange?: (sectionKey: string) => void;
+  /** Called after a successful add so the document can reload its content. */
+  onAdded?: () => void;
 }) {
   const [active, setActive] = useState<AiConnection | null | undefined>(undefined); // undefined = loading, null = none connected
   const [statusError, setStatusError] = useState(false);
   const [customQuestion, setCustomQuestion] = useState("");
-  const [selectedQuestion, setSelectedQuestion] = useState<string | null>(null);
+  const [lastQuestion, setLastQuestion] = useState<string | null>(null);
   const [answer, setAnswer] = useState<AiAnswer | null>(null);
   const [asking, setAsking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [askFailed, setAskFailed] = useState(false);
 
   const [addStatus, setAddStatus] = useState<"idle" | "adding" | "added" | "error">("idle");
-  const [addError, setAddError] = useState<string | null>(null);
-
-  // Which stage's suggested-question list is currently shown. Starts on
-  // Section 02 (Business) — Section 01 (the question itself) isn't an AI
-  // target (see STAGE_QUESTIONS' key set).
-  const [stageKey, setStageKey] = useState<string>("business");
   const [stagesComplete, setStagesComplete] = useState(false);
 
   useEffect(() => {
@@ -137,233 +141,249 @@ export function ResearchAssistantPanel({
       .catch(() => setStatusError(true));
   }, []);
 
+  // A new section is a new context: clear the previous section's exchange.
+  useEffect(() => {
+    setAnswer(null);
+    setAskFailed(false);
+    setAddStatus("idle");
+    setLastQuestion(null);
+    setStagesComplete(false);
+  }, [activeSectionKey]);
+
   const connected = !!active?.connected;
-  const stageMeta = SECTIONS.find((s) => s.key === stageKey);
-  const suggestedQuestions = STAGE_QUESTIONS[stageKey] ?? DEFAULT_QUESTIONS;
-  // Addable iff the AI's reported stage is one of this file's known,
-  // field-backed stages (STAGE_QUESTIONS' key set) — "review" and any other
-  // non-addable key (Section 01/09/11/13 equivalents) fall through to
-  // undefined here, matching research/sections.py's ADD_TO_RESEARCH_STAGES
-  // on the backend, which will also reject them with a clear 400 if this
-  // check were ever bypassed.
+  const suggestedQuestions = STAGE_QUESTIONS[activeSectionKey] ?? DEFAULT_QUESTIONS;
+  // Addable iff the AI's reported stage is one of the field-backed stages —
+  // matches research/sections.py's ADD_TO_RESEARCH_STAGES on the backend.
   const addableSectionKey = answer && answer.current_stage in STAGE_QUESTIONS ? answer.current_stage : undefined;
+
+  // Continue advances in SECTIONS order, preferring the stage the answer was
+  // about, skipping stages with no single addable target (09 Bull/Base/Bear,
+  // 11 Investment Thesis, 13 Review) — the documented Phase 4/5 scope limit.
+  const fromKey = addableSectionKey ?? activeSectionKey;
+  const fromIdx = SECTIONS.findIndex((x) => x.key === fromKey);
+  const nextStage = SECTIONS.slice(fromIdx + 1).find((x) => x.key in STAGE_QUESTIONS) ?? null;
 
   async function ask(question: string) {
     const normalized = question.trim();
     if (!normalized || asking) return;
-
-    setError(null);
+    setLastQuestion(normalized);
+    setAskFailed(false);
     setAnswer(null);
     setAddStatus("idle");
-    setAddError(null);
     setAsking(true);
-
     try {
-      const result = await api.post<AiAnswer>(
-        `/research/${researchId}/ai/ask`,
-        { question: normalized },
-      );
+      const result = await api.post<AiAnswer>(`/research/${researchId}/ai/ask`, { question: normalized });
       setAnswer(result);
-    } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : "The Research Assistant could not answer right now.",
-      );
+    } catch {
+      setAskFailed(true);
     } finally {
       setAsking(false);
     }
   }
 
-  function handleCustomAsk() {
-    ask(customQuestion);
-  }
-
   async function handleAddToResearch() {
     if (!answer || !addableSectionKey || addStatus === "adding") return;
     setAddStatus("adding");
-    setAddError(null);
     try {
-      const result = await api.post<{ added: boolean; already_added: boolean }>(
+      await api.post<{ added: boolean; already_added: boolean }>(
         `/research/${researchId}/ai/add-to-research`,
-        { stage: addableSectionKey, question: selectedQuestion ?? customQuestion, answer: answer.answer },
+        { stage: addableSectionKey, question: lastQuestion ?? customQuestion, answer: answer.answer },
       );
-      setAddStatus("added"); // both a fresh add and an already-added answer read as "✓ Added to Research"
-      void result;
-    } catch (err) {
+      setAddStatus("added"); // a fresh add and an already-present answer both read as added
+      onAdded?.();
+    } catch {
       setAddStatus("error");
-      setAddError(err instanceof ApiError ? err.message : "Could not add this to your research.");
     }
   }
 
   function handleContinueResearch() {
-    // Move to the next section in the SAME canonical order the document
-    // itself uses (lib/research-progress.ts's SECTIONS) — reusing it rather
-    // than a second stage list. Prefers the stage the just-answered question
-    // was actually about; falls back to the panel's own current stage if the
-    // AI's last stage had no addable section (e.g. Bull/Base/Bear,
-    // Investment Thesis).
-    //
-    // Sections 09 (Bull/Base/Bear) and 11 (Investment Thesis) are
-    // deliberately skipped when advancing: they have no single addable
-    // target (09 maps to three separate scenario fields with no safe way to
-    // infer which one an AI answer belongs to; 11 is a derived, read-only
-    // summary with no field of its own — see research/sections.py's
-    // docstring). This is the documented, intentional scope limit from
-    // Phase 4/5, not an oversight.
-    const fromKey = addableSectionKey ?? stageKey;
-    const idx = SECTIONS.findIndex((s) => s.key === fromKey);
-    const next = SECTIONS.slice(idx + 1).find((s) => s.key in STAGE_QUESTIONS);
-    setAnswer(null); // Continue Research never auto-saves the current answer — the user already chose to, or didn't
+    // Never auto-saves the current answer — the user already chose to, or didn't.
+    setAnswer(null);
     setAddStatus("idle");
-    setError(null);
-    setSelectedQuestion(null);
-    if (!next) {
+    setAskFailed(false);
+    setLastQuestion(null);
+    if (!nextStage) {
       setStagesComplete(true);
       return;
     }
-    setStagesComplete(false);
-    setStageKey(next.key);
-    onStageChange?.(next.key);
+    onStageChange?.(nextStage.key);
   }
 
+  const continueLabel = nextStage ? `Continue to ${nextStage.label} →` : "Finish research stages";
+
   return (
-    <div
-      className="qf-card p-4 space-y-4"
-      style={{ width: 300, maxWidth: "100%", flexShrink: 0 }}
-    >
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-ink-soft">
-          Research Assistant
-        </p>
-        <p className="text-[11px] text-ink-soft mt-1">
-          Ask questions about your current research. Answers are generated by
-          your connected AI provider and are not added to your research automatically.
-        </p>
+    <aside className={`${s.assistant} ${s.touch}`} aria-label="Research Assistant">
+      <div className={s.assistantHead}>
+        <p className="qf-caption">Research Assistant</p>
+        <p className="qf-section-title mt-2">{labelOf(activeSectionKey)}</p>
+        <p className="qf-secondary mt-1">{STAGE_PURPOSE[activeSectionKey]}</p>
       </div>
 
-      <div className="text-xs">
-        {statusError && <span className="text-ink-soft">Connection status unavailable.</span>}
-        {!statusError && active === undefined && <span className="text-ink-soft">Checking your AI connection…</span>}
-        {!statusError && active === null && (
-          <div className="space-y-1.5">
-            <span className="text-ink-soft">No AI provider connected.</span>
-            <a href="/profile" className="qf-btn-ghost text-xs block text-center" style={{ textDecoration: "none" }}>
-              Connect AI Provider
+      <div className={s.assistantBody}>
+        {active === null && !statusError && (
+          <div>
+            <p className="text-sm font-semibold">Connect your AI provider to continue.</p>
+            <p className="qf-secondary mt-1">
+              The assistant uses your own AI key. Nothing is added to your research automatically.
+            </p>
+            <a href="/profile" className="qf-btn-primary w-full mt-3" style={{ textDecoration: "none" }}>
+              Connect AI
             </a>
           </div>
         )}
-        {!statusError && active && (
-          <div>
-            <span style={{ color: "var(--brass)" }}>
-              Connected — {{ anthropic: "Anthropic", openai: "OpenAI", openai_compatible: "OpenAI-Compatible" }[active.provider ?? ""] ?? active.provider}
-            </span>
-            {active.model && <p className="text-ink-soft mt-0.5">Model — {active.model}</p>}
-          </div>
-        )}
-      </div>
 
-      <div>
-        <p className="qf-label">Current research question</p>
-        <p className="text-sm text-ink-soft italic">{currentQuestion || "Not set yet."}</p>
-      </div>
+        <section aria-labelledby="ra-suggested">
+          <p id="ra-suggested" className={s.blockLabel}>Suggested questions</p>
+          <ul className="grid gap-2 mt-2">
+            {suggestedQuestions.map((q) => (
+              <li key={q}>
+                <button
+                  type="button"
+                  className={`${s.suggestion} ${lastQuestion === q && (asking || answer) ? s.suggestionActive : ""}`}
+                  onClick={() => ask(q)}
+                  disabled={!connected || asking}
+                >
+                  {q}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-      <div>
-        <div className="flex items-center justify-between">
-          <p className="qf-label mb-0">
-            Suggested questions{stageMeta ? ` — ${stageMeta.n} · ${stageMeta.label}` : ""}
-          </p>
-        </div>
-        <div className="space-y-1.5 mt-1.5">
-          {suggestedQuestions.map((question) => (
-            <button
-              key={question}
-              type="button"
-              className="text-xs text-left w-full px-2 py-1.5 rounded"
-              style={{
-                background: selectedQuestion === question ? "var(--cream-1)" : "transparent",
-                color: "var(--ink-soft)",
-                border: "1px solid var(--cream-2)",
-              }}
-              onClick={() => { setSelectedQuestion(question); ask(question); }}
-              disabled={!connected || asking}
-            >
-              {question}
-            </button>
-          ))}
-        </div>
-      </div>
+        <section>
+          <label htmlFor="ra-custom" className={s.blockLabel}>Ask your own question</label>
+          <textarea
+            id="ra-custom"
+            className="qf-input mt-2"
+            style={{ minHeight: 84 }}
+            placeholder={activeSectionKey in STAGE_QUESTIONS ? `Ask about ${labelOf(activeSectionKey).toLowerCase()}…` : "Ask something about this research…"}
+            value={customQuestion}
+            onChange={(e) => setCustomQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); ask(customQuestion); }
+            }}
+            disabled={!connected || asking}
+          />
+          <button
+            type="button"
+            className="qf-btn-primary w-full mt-2"
+            onClick={() => ask(customQuestion)}
+            disabled={!connected || asking || !customQuestion.trim()}
+          >
+            {asking ? "Thinking…" : "Ask Research Assistant"}
+          </button>
+        </section>
 
-      <div>
-        <p className="qf-label">Ask your own question</p>
-        <textarea
-          className="qf-input min-h-[90px] text-xs"
-          placeholder="Ask something about this research…"
-          value={customQuestion}
-          onChange={(e) => setCustomQuestion(e.target.value)}
-          disabled={!connected || asking}
-        />
-        <button
-          type="button"
-          className="qf-btn-primary text-xs w-full mt-2"
-          onClick={handleCustomAsk}
-          disabled={!connected || asking || !customQuestion.trim()}
-        >
-          {asking ? "Researching…" : "Ask Research Assistant"}
-        </button>
-      </div>
+        <div aria-live="polite">
+          {asking && (
+            <div className={s.aiResponse} aria-busy="true">
+              <span className={s.aiTag}>AI Response</span>
+              <p className="qf-secondary mt-2">Thinking through your research…</p>
+              <div className={`${s.thinking} mt-3`} aria-hidden>
+                <div className={s.thinkingLine} style={{ width: "92%" }} />
+                <div className={s.thinkingLine} style={{ width: "78%" }} />
+                <div className={s.thinkingLine} style={{ width: "64%" }} />
+              </div>
+            </div>
+          )}
 
-      {error && <p className="text-xs" style={{ color: "#9C4B3F" }} role="alert">{error}</p>}
+          {askFailed && !asking && (
+            <div className={s.aiResponse} role="alert" style={{ borderLeftColor: "var(--down)" }}>
+              <p className="text-sm font-semibold">The research assistant could not respond.</p>
+              <p className="qf-secondary mt-1">Check your AI connection, then try again.</p>
+              <button type="button" className="qf-btn-ghost mt-3" onClick={() => lastQuestion && ask(lastQuestion)}>
+                Try Again
+              </button>
+            </div>
+          )}
 
-      <Card>
-        <p className="qf-label">Answer</p>
-        {!answer && !asking && <p className="text-xs text-ink-soft mt-1">Ask a question to start researching.</p>}
-        {asking && <p className="text-xs text-ink-soft mt-1">Your AI provider is researching this question…</p>}
-        {answer && (
-          <div className="mt-2 space-y-2">
-            <p className="text-sm whitespace-pre-wrap leading-relaxed">{answer.answer}</p>
-            <p className="text-[10px] text-ink-soft">
-              Stage: {answer.current_stage}
-              {answer.model ? ` · Model: ${answer.model}` : ""}
+          {answer && !asking && (
+            <article className={s.aiResponse} aria-label="AI response">
+              <span className={s.aiTag}>
+                <span aria-hidden>◆</span> AI Response · not yet in your research
+              </span>
+              {lastQuestion && <p className={s.aiQuestion}>“{lastQuestion}”</p>}
+              <div className={s.aiText}>{answer.answer}</div>
+              <div className={s.aiDivider} />
+
+              {addStatus === "added" ? (
+                <p className={`${s.status} ${s.statusOk}`} role="status">
+                  ✓ Added to {labelOf(addableSectionKey ?? "")} — now part of your research
+                </p>
+              ) : !isDraft ? (
+                <p className="qf-secondary">
+                  This research is published. Edit a section directly to include anything useful.
+                </p>
+              ) : addableSectionKey ? (
+                <>
+                  <button
+                    type="button"
+                    className="qf-btn-primary w-full"
+                    onClick={handleAddToResearch}
+                    disabled={addStatus === "adding"}
+                  >
+                    {addStatus === "adding" ? "Adding…" : `Add to ${labelOf(addableSectionKey)}`}
+                  </button>
+                  <p className="qf-secondary mt-1.5" style={{ fontSize: 12 }}>
+                    Appends this answer to your {labelOf(addableSectionKey)} findings. You can edit it afterwards.
+                  </p>
+                </>
+              ) : (
+                <p className="qf-secondary">
+                  This answer isn&apos;t tied to a single section — copy what&apos;s useful into a section yourself.
+                </p>
+              )}
+              {addStatus === "error" && (
+                <p className={`${s.status} ${s.statusErr} mt-2`} role="alert">
+                  Couldn&apos;t add this to your research. Try again.
+                </p>
+              )}
+
+              {!stagesComplete && (
+                <button type="button" className="qf-btn-ghost w-full mt-3" onClick={handleContinueResearch}>
+                  {continueLabel}
+                </button>
+              )}
+            </article>
+          )}
+
+          {!answer && !asking && !askFailed && connected && (
+            <p className="qf-secondary">
+              Answers appear here, marked as AI. Nothing is saved until you choose Add to Research.
             </p>
-          </div>
-        )}
-      </Card>
+          )}
 
-      {addError && <p className="text-xs" style={{ color: "#9C4B3F" }} role="alert">{addError}</p>}
+          {stagesComplete && (
+            <p className="qf-secondary mt-2" role="status">
+              You&apos;ve reached the last assisted stage. Review your research when you&apos;re ready.
+            </p>
+          )}
+        </div>
 
-      <div className="flex flex-col gap-2">
-        {addStatus === "added" ? (
-          <p className="text-xs text-center" style={{ color: "var(--brass)" }}>✓ Added to Research</p>
-        ) : (
-          <button
-            type="button"
-            className="qf-btn-ghost text-xs w-full"
-            onClick={handleAddToResearch}
-            disabled={!answer || !addableSectionKey || addStatus === "adding"}
-            title={
-              !answer ? "Ask a question first."
-              : !addableSectionKey ? "This kind of answer isn't tied to a single section yet — copy what's useful into a section yourself."
-              : undefined
-            }
-          >
-            {addStatus === "adding" ? "Adding…" : "Add to Research"}
-          </button>
-        )}
-
-        {stagesComplete ? (
-          <p className="text-xs text-center text-ink-soft py-1.5">Research stages complete</p>
-        ) : (
-          <button
-            type="button"
-            className="qf-btn-ghost text-xs w-full"
-            onClick={handleContinueResearch}
-            disabled={!connected}
-          >
-            Continue Research →
+        {!answer && !asking && !stagesComplete && connected && nextStage && (
+          <button type="button" className={s.linkBtn} style={{ justifySelf: "start" }} onClick={handleContinueResearch}>
+            {continueLabel}
           </button>
         )}
       </div>
-    </div>
+
+      <div className={s.assistantFoot}>
+        {statusError ? (
+          <><span className={`${s.connDot} ${s.connDotOff}`} aria-hidden /> Connection status unavailable</>
+        ) : active === undefined ? (
+          <><span className={`${s.connDot} ${s.connDotOff}`} aria-hidden /> Checking AI connection…</>
+        ) : active ? (
+          <>
+            <span className={s.connDot} aria-hidden />
+            <span>
+              Connected · {PROVIDER_LABEL[active.provider ?? ""] ?? active.provider}
+              {active.model && <span className="qf-metadata"> · {active.model}</span>}
+            </span>
+          </>
+        ) : (
+          <><span className={`${s.connDot} ${s.connDotOff}`} aria-hidden /> Not connected</>
+        )}
+      </div>
+    </aside>
   );
 }

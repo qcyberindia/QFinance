@@ -33,6 +33,10 @@ class Contribution(Base):
 
 
 class CreditLedgerEntry(Base):
+    """LEGACY — no longer written or read. Q-Points are not money; this
+    table belonged to a removed points-to-paise interpretation. The model is
+    kept only so ORM metadata still matches the existing schema (dropping
+    the table would need a migration)."""
     __tablename__ = "credit_ledger"
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -23,13 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.deps import get_current_profile, get_current_user, require_csrf, require_role, require_verified_email, require_verified_profile
-from app.core.errors import Forbidden
+from app.core.errors import Forbidden, NotFound
 from app.modules.auth.models import User
 from app.modules.community import service
 from app.modules.community.schemas import (
     BookmarkCreateRequest, BookmarkCreateResponse, BookmarkListResponse, CommentCreateRequest, CommentListResponse,
     CommentPatchRequest, CommentResponse, PostCreateRequest, PostListResponse, PostPatchRequest, PostResponse,
-    ReactionCreateRequest, ReactionCreateResponse,
+    ReactionCreateRequest, ReactionCreateResponse, ThesisSnapshotResponse,
 )
 from app.modules.research import service as research_service
 from app.modules.users.models import Profile
@@ -38,10 +38,6 @@ router = APIRouter(prefix="/community", tags=["community"])
 research_discussion_router = APIRouter(prefix="/research", tags=["community"])
 
 _STAFF_ROLES = {"MODERATOR", "ADMIN", "SUPER_ADMIN"}
-
-
-def _is_member(profile: Profile) -> bool:
-    return "MEMBER" in profile.role_grants
 
 
 def _is_staff(profile: Profile) -> bool:
@@ -64,7 +60,7 @@ async def list_channel_posts(
 ):
     """Basic/Pro product decision (see require_verified_profile's docstring):
     every channel, including non-announcements, is readable by any
-    Authenticated + Verified user — the earlier `if not _is_member(profile):
+    Authenticated + Verified user — the earlier `if not <MEMBER role>:
     raise Forbidden('This channel requires Core membership.')` block is
     REMOVED. 'announcements' additionally never required Verified either
     (still true, preserved below) — the only remaining distinction between
@@ -105,6 +101,44 @@ async def create_channel_post(
     return serialized
 
 
+def _require_verified_for(post, user: User) -> None:
+    """Every non-announcements post — channel posts AND research-linked
+    (channel=NULL) thesis/discussion posts — needs a verified email to read."""
+    if post.channel != "announcements" and user.email_verified_at is None:
+        raise Forbidden("Please verify your email address to continue.")
+
+
+@router.get("/posts", response_model=PostListResponse)
+async def list_feed(
+    pillar: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(get_current_profile),
+    _: User = Depends(require_verified_email),
+):
+    """Community feed across Discussion / Q&A / Thesis (`pillar` =
+    discussion | question | thesis, omitted = all). Same read gate as the
+    channel listings: Authenticated + verified email."""
+    items, total = await service.list_feed(db, pillar=pillar, page=page, page_size=page_size,
+                                           viewer_id=profile.user_id)
+    return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+
+@router.get("/posts/{post_id}/thesis", response_model=ThesisSnapshotResponse)
+async def get_post_thesis(
+    post_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    profile: Profile = Depends(get_current_profile),
+    user: User = Depends(get_current_user),
+):
+    post = await service.get_post_or_404(db, post_id)
+    if not service._visible_to(post, viewer_id=profile.user_id, is_staff=_is_staff(profile)):
+        raise NotFound("Post not found.")
+    _require_verified_for(post, user)
+    return await service.get_thesis_snapshot(db, post=post)
+
+
 @router.get("/posts/{post_id}", response_model=PostResponse)
 async def get_post(
     post_id: uuid.UUID,
@@ -122,10 +156,12 @@ async def get_post(
     product decision applies identically to reading a single post as it
     does to listing them."""
     post = await service.get_post_or_404(db, post_id)
-    if post.channel is not None and post.channel != "announcements":
-        if user.email_verified_at is None:
-            raise Forbidden("Please verify your email address to continue.")
-    return await service.serialize_post(db, post)
+    # Moderation visibility (restricted = author/staff, removed = nobody),
+    # matching list_comments — previously a removed post was readable by id.
+    if not service._visible_to(post, viewer_id=profile.user_id, is_staff=_is_staff(profile)):
+        raise NotFound("Post not found.")
+    _require_verified_for(post, user)
+    return await service.serialize_post(db, post, viewer_id=profile.user_id)
 
 
 @router.patch("/posts/{post_id}", response_model=PostResponse, dependencies=[Depends(require_csrf)])
@@ -164,14 +200,12 @@ async def list_research_discussion(
     """Basic/Pro product decision: research discussions are readable by any
     Authenticated + Verified user, same as every other community surface —
     the earlier `if view.get("preview"): raise Forbidden('Research
-    discussions require Core membership.')` block is REMOVED. Visibility of
-    the underlying research item's actual CONTENT (core vs free_example
-    access_tier) is unaffected by this change — that gate lives in
-    research_service.get_research_view itself and still applies; this only
-    removes the discussion-specific MEMBER overlay that previously sat on
-    top of it."""
+    discussions require Core membership.')` block is REMOVED. The research
+    item itself must still be visible to the caller (published, or their own
+    draft) — enforced by research_service.get_research_view. There is no paid
+    tier anywhere."""
     await research_service.get_research_view(
-        db, research_id, viewer_id=profile.user_id, viewer_is_member=_is_member(profile), is_staff=_is_staff(profile),
+        db, research_id, viewer_id=profile.user_id, is_staff=_is_staff(profile),
     )
     items, total = await service.list_research_discussion(db, research_id=research_id, page=page, page_size=page_size)
     return {"items": items, "page": page, "page_size": page_size, "total": total}
@@ -186,7 +220,7 @@ async def create_research_discussion_post(
 ):
     # Confirms the research item exists and is visible before allowing discussion on it.
     await research_service.get_research_view(
-        db, research_id, viewer_id=profile.user_id, viewer_is_member=True, is_staff=_is_staff(profile),
+        db, research_id, viewer_id=profile.user_id, is_staff=_is_staff(profile),
     )
     post = await service.create_research_discussion_post(
         db, actor_id=profile.user_id, research_id=research_id, content=body.content,
@@ -227,9 +261,7 @@ async def list_comments(
         after this auth-tier gate passes.
     """
     post = await service.get_post_or_404(db, post_id)
-    if post.channel is not None and post.channel != "announcements":
-        if user.email_verified_at is None:
-            raise Forbidden("Please verify your email address to continue.")
+    _require_verified_for(post, user)
     # Basic/Pro product decision: the prior MEMBER-only gates for
     # non-announcements channels and research-linked discussions are REMOVED
     # here too, matching the parent post's own (now-Basic-accessible) read gate.

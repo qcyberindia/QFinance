@@ -18,7 +18,7 @@ from app.core.db import get_db
 from app.core.deps import get_current_profile, require_csrf, require_role, require_verified_profile
 from app.modules.research import service
 from app.modules.research.schemas import (
-    AccessTierUpdateRequest, AccessTierUpdateResponse, AddAIFindingRequest, AddAIFindingResponse,
+    AddAIFindingRequest, AddAIFindingResponse,
     PublishRequest, PublishToCommunityRequest,
     ResearchCreateRequest, ResearchCreateResponse, ResearchPatchRequest, SourceCreateRequest, SourceResponse,
     ResearchAIAskRequest, ResearchAIAskResponse,
@@ -31,10 +31,6 @@ from app.modules.research.sections import next_stage_key
 router = APIRouter(prefix="/research", tags=["research"])
 
 _STAFF_ROLES = {"MODERATOR", "ADMIN", "SUPER_ADMIN"}
-
-
-def _is_member(profile: Profile) -> bool:
-    return "MEMBER" in profile.role_grants
 
 
 def _is_staff(profile: Profile) -> bool:
@@ -63,7 +59,7 @@ async def library(
     `?include_moderated=true` gets the normal, unchanged default result."""
     items, total = await service.list_library(
         db, company_id=company_id, industry=industry, page=page, page_size=page_size,
-        viewer_is_member=_is_member(profile), include_moderated=include_moderated, is_staff=_is_staff(profile),
+        include_moderated=include_moderated, is_staff=_is_staff(profile),
     )
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 
@@ -78,7 +74,7 @@ async def search(
     profile: Profile = Depends(get_current_profile),
 ):
     items, total = await service.search_research(
-        db, query=q, page=page, page_size=page_size, viewer_is_member=_is_member(profile),
+        db, query=q, page=page, page_size=page_size,
         include_moderated=include_moderated, is_staff=_is_staff(profile),
     )
     return {"items": items, "page": page, "page_size": page_size, "total": total}
@@ -274,7 +270,7 @@ async def get_research(
     profile: Profile = Depends(get_current_profile),
 ):
     return await service.get_research_view(
-        db, research_id, viewer_id=profile.user_id, viewer_is_member=_is_member(profile), is_staff=_is_staff(profile),
+        db, research_id, viewer_id=profile.user_id, is_staff=_is_staff(profile),
     )
 
 
@@ -335,7 +331,7 @@ async def list_sources(
     profile: Profile = Depends(get_current_profile),
 ):
     await service.get_research_view(
-        db, research_id, viewer_id=profile.user_id, viewer_is_member=_is_member(profile), is_staff=_is_staff(profile),
+        db, research_id, viewer_id=profile.user_id, is_staff=_is_staff(profile),
     )
     sources = await service.list_sources(db, research_id)
     return [SourceResponse(id=str(s.id), label=s.label, reference=s.reference, supports_claim=s.supports_claim)
@@ -390,7 +386,7 @@ async def list_versions(
     profile: Profile = Depends(get_current_profile),
 ):
     await service.get_research_view(
-        db, research_id, viewer_id=profile.user_id, viewer_is_member=_is_member(profile), is_staff=_is_staff(profile),
+        db, research_id, viewer_id=profile.user_id, is_staff=_is_staff(profile),
     )
     versions, total = await service.list_versions(db, research_id, page=page, page_size=page_size)
     return {
@@ -408,27 +404,9 @@ async def get_version(
     profile: Profile = Depends(get_current_profile),
 ):
     await service.get_research_view(
-        db, research_id, viewer_id=profile.user_id, viewer_is_member=_is_member(profile), is_staff=_is_staff(profile),
+        db, research_id, viewer_id=profile.user_id, is_staff=_is_staff(profile),
     )
     version, is_current = await service.get_version(db, research_id, version_number)
     return {"version_number": version.version_number, "snapshot": version.snapshot,
             "change_note": version.change_note, "edited_by": str(version.edited_by),
             "created_at": version.created_at, "is_current": is_current}
-
-
-# ---------------------------------------------------------------------------
-# 7.5 Access classification — ADMIN/SUPER_ADMIN only, AD-19
-# ---------------------------------------------------------------------------
-
-@router.patch("/{research_id}/access-tier", response_model=AccessTierUpdateResponse,
-              dependencies=[Depends(require_csrf)])
-async def set_access_tier(
-    research_id: uuid.UUID,
-    body: AccessTierUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-    profile: Profile = Depends(require_role("ADMIN", "SUPER_ADMIN")),
-):
-    research = await service.set_access_tier(
-        db, research_id=research_id, actor_id=profile.user_id, access_tier=body.access_tier,
-    )
-    return AccessTierUpdateResponse(id=str(research.id), access_tier=research.access_tier)
